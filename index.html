@@ -1,7 +1,395 @@
 <!DOCTYPE html>
-<html>
+<html lang="pt-BR">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Bot Dimas - Bot para Ações do FiveM</title>
+    <style>
+        :root {
+            --primary-color: #5865F2;
+            --secondary-color: #3c45a5;
+            --dark-color: #2c2f33;
+            --light-color: #ffffff;
+            --success-color: #57F287;
+            --warning-color: #FEE75C;
+            --danger-color: #ED4245;
+        }
+        
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+        }
+        
+        body {
+            background-color: #f5f5f5;
+            color: #333;
+            line-height: 1.6;
+        }
+        
+        header {
+            background: linear-gradient(135deg, var(--primary-color), var(--secondary-color));
+            color: var(--light-color);
+            padding: 2rem 0;
+            text-align: center;
+        }
+        
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+            padding: 0 15px;
+        }
+        
+        .logo {
+            font-size: 2.5rem;
+            font-weight: bold;
+            margin-bottom: 1rem;
+        }
+        
+        .tagline {
+            font-size: 1.2rem;
+            margin-bottom: 1.5rem;
+        }
+        
+        .btn {
+            display: inline-block;
+            background-color: var(--light-color);
+            color: var(--primary-color);
+            padding: 10px 20px;
+            border-radius: 5px;
+            text-decoration: none;
+            font-weight: bold;
+            transition: all 0.3s ease;
+            margin: 0 10px;
+        }
+        
+        .btn:hover {
+            transform: translateY(-3px);
+            box-shadow: 0 5px 15px rgba(0, 0, 0, 0.1);
+        }
+        
+        .btn-primary {
+            background-color: var(--success-color);
+            color: var(--dark-color);
+        }
+        
+        section {
+            padding: 4rem 0;
+        }
+        
+        .section-title {
+            text-align: center;
+            margin-bottom: 3rem;
+            color: var(--primary-color);
+        }
+        
+        .features {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+            gap: 2rem;
+        }
+        
+        .feature-card {
+            background-color: var(--light-color);
+            border-radius: 10px;
+            padding: 2rem;
+            box-shadow: 0 5px 15px rgba(0, 0, 0, 0.05);
+            transition: transform 0.3s ease;
+        }
+        
+        .feature-card:hover {
+            transform: translateY(-10px);
+        }
+        
+        .feature-icon {
+            font-size: 2.5rem;
+            margin-bottom: 1rem;
+            color: var(--primary-color);
+        }
+        
+        .feature-title {
+            font-size: 1.5rem;
+            margin-bottom: 1rem;
+            color: var(--dark-color);
+        }
+        
+        .plans {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+            gap: 2rem;
+            margin-top: 2rem;
+        }
+        
+        .plan-card {
+            background-color: var(--light-color);
+            border-radius: 10px;
+            padding: 2rem;
+            box-shadow: 0 5px 15px rgba(0, 0, 0, 0.05);
+            text-align: center;
+            border-top: 5px solid var(--primary-color);
+        }
+        
+        .plan-title {
+            font-size: 1.8rem;
+            margin-bottom: 1rem;
+            color: var(--primary-color);
+        }
+        
+        .plan-price {
+            font-size: 2.5rem;
+            font-weight: bold;
+            margin-bottom: 1.5rem;
+        }
+        
+        .plan-price span {
+            font-size: 1rem;
+            font-weight: normal;
+        }
+        
+        .plan-features {
+            list-style: none;
+            margin-bottom: 2rem;
+        }
+        
+        .plan-features li {
+            padding: 8px 0;
+            border-bottom: 1px solid #eee;
+        }
+        
+        .premium-plan {
+            transform: scale(1.05);
+            border-top-color: var(--success-color);
+        }
+        
+        .commands {
+            background-color: var(--dark-color);
+            color: var(--light-color);
+            padding: 4rem 0;
+        }
+        
+        .command-list {
+            background-color: #363940;
+            border-radius: 10px;
+            padding: 2rem;
+            max-width: 800px;
+            margin: 0 auto;
+        }
+        
+        .command-item {
+            padding: 1rem 0;
+            border-bottom: 1px solid #4e5058;
+        }
+        
+        .command-name {
+            font-weight: bold;
+            color: var(--success-color);
+        }
+        
+        footer {
+            background-color: var(--dark-color);
+            color: var(--light-color);
+            text-align: center;
+            padding: 2rem 0;
+        }
+        
+        .contact-info {
+            margin: 2rem 0;
+        }
+        
+        .social-links a {
+            display: inline-block;
+            color: var(--light-color);
+            margin: 0 10px;
+            font-size: 1.5rem;
+            transition: all 0.3s ease;
+        }
+        
+        .social-links a:hover {
+            color: var(--primary-color);
+            transform: translateY(-3px);
+        }
+        
+        @media (max-width: 768px) {
+            .features, .plans {
+                grid-template-columns: 1fr;
+            }
+            
+            .premium-plan {
+                transform: scale(1);
+            }
+        }
+    </style>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+</head>
 <body>
-<h1>Hello World</h1>
-<p>I'm hosted with GitHub Pages.</p>
+    <header>
+        <div class="container">
+            <div class="logo">Bot Dimas</div>
+            <div class="tagline">O melhor bot para gerenciar ações no seu servidor FiveM</div>
+            <div class="header-buttons">
+                <a href="https://discord.com/api/oauth2/authorize?client_id=SEU_CLIENT_ID&permissions=8&scope=bot" class="btn btn-primary">Adicionar ao Servidor</a>
+                <a href="#planos" class="btn">Ver Planos</a>
+            </div>
+        </div>
+    </header>
+    
+    <section>
+        <div class="container">
+            <h2 class="section-title">Funcionalidades</h2>
+            <div class="features">
+                <div class="feature-card">
+                    <div class="feature-icon">
+                        <i class="fas fa-calendar-check"></i>
+                    </div>
+                    <h3 class="feature-title">Gerenciamento de Ações</h3>
+                    <p>Crie, gerencie e finalize ações do FiveM com facilidade através de comandos intuitivos e botões interativos.</p>
+                </div>
+                
+                <div class="feature-card">
+                    <div class="feature-icon">
+                        <i class="fas fa-users"></i>
+                    </div>
+                    <h3 class="feature-title">Participantes</h3>
+                    <p>Acompanhe em tempo real os participantes de cada ação, com limite configurável e distribuição automática de valores.</p>
+                </div>
+                
+                <div class="feature-card">
+                    <div class="feature-icon">
+                        <i class="fas fa-money-bill-wave"></i>
+                    </div>
+                    <h3 class="feature-title">Pagamentos Integrados</h3>
+                    <p>Integração com Mercado Pago para pagamentos seguros, com geração de QR code e links de pagamento.</p>
+                </div>
+                
+                <div class="feature-card">
+                    <div class="feature-icon">
+                        <i class="fas fa-image"></i>
+                    </div>
+                    <h3 class="feature-title">Prints GG</h3>
+                    <p>Armazene e exiba prints das ações diretamente nas mensagens, com banco de imagens automático.</p>
+                </div>
+                
+                <div class="feature-card">
+                    <div class="feature-icon">
+                        <i class="fas fa-user-shield"></i>
+                    </div>
+                    <h3 class="feature-title">Gestão de Permissões</h3>
+                    <p>Sistema de cargos integrado, com suporte para cargo "resp_acao" e permissões administrativas.</p>
+                </div>
+                
+                <div class="feature-card">
+                    <div class="feature-icon">
+                        <i class="fas fa-chart-line"></i>
+                    </div>
+                    <h3 class="feature-title">Estatísticas</h3>
+                    <p>Acompanhe estatísticas de uso, participação e valores gerados nas ações do seu servidor.</p>
+                </div>
+            </div>
+        </div>
+    </section>
+    
+    <section id="planos">
+        <div class="container">
+            <h2 class="section-title">Planos de Assinatura</h2>
+            <p style="text-align: center; margin-bottom: 2rem;">Escolha o plano ideal para o seu servidor:</p>
+            
+            <div class="plans">
+                <div class="plan-card">
+                    <h3 class="plan-title">Básico</h3>
+                    <div class="plan-price">R$ 20,00 <span>/mês</span></div>
+                    <ul class="plan-features">
+                        <li>Acesso por 30 dias</li>
+                        <li>Gerenciamento de ações</li>
+                        <li>Limite de 5 ações simultâneas</li>
+                        <li>Suporte básico</li>
+                    </ul>
+                    <a href="#" class="btn">Assinar Agora</a>
+                </div>
+                
+                <div class="plan-card premium-plan">
+                    <h3 class="plan-title">Premium</h3>
+                    <div class="plan-price">R$ 35,00 <span>/mês</span></div>
+                    <ul class="plan-features">
+                        <li>Acesso por 60 dias</li>
+                        <li>Gerenciamento de ações</li>
+                        <li>Ações ilimitadas</li>
+                        <li>Recursos avançados</li>
+                        <li>Suporte prioritário</li>
+                    </ul>
+                    <a href="#" class="btn btn-primary">Assinar Agora</a>
+                </div>
+                
+                <div class="plan-card">
+                    <h3 class="plan-title">Pro</h3>
+                    <div class="plan-price">R$ 45,00 <span>/mês</span></div>
+                    <ul class="plan-features">
+                        <li>Acesso por 90 dias</li>
+                        <li>Todas as funcionalidades</li>
+                        <li>Ações ilimitadas</li>
+                        <li>Recursos exclusivos</li>
+                        <li>Suporte VIP</li>
+                        <li>Desconto em renovações</li>
+                    </ul>
+                    <a href="#" class="btn">Assinar Agora</a>
+                </div>
+            </div>
+        </div>
+    </section>
+    
+    <section class="commands">
+        <div class="container">
+            <h2 class="section-title">Comandos Principais</h2>
+            
+            <div class="command-list">
+                <div class="command-item">
+                    <span class="command-name">!acao</span>
+                    <p>Cria uma nova ação e abre um formulário para preenchimento</p>
+                </div>
+                
+                <div class="command-item">
+                    <span class="command-name">!status_licenca</span>
+                    <p>Verifica o status da licença atual no servidor</p>
+                </div>
+                
+                <div class="command-item">
+                    <span class="command-name">!purge</span>
+                    <p>Limpa mensagens do canal (use !purge N para limpar N mensagens)</p>
+                </div>
+                
+                <div class="command-item">
+                    <span class="command-name">!webhook</span>
+                    <p>Exibe informações sobre o servidor de webhook para pagamentos</p>
+                </div>
+                
+                <div class="command-item">
+                    <span class="command-name">!adm</span>
+                    <p>Painel de administração (apenas para o dono do bot)</p>
+                </div>
+            </div>
+        </div>
+    </section>
+    
+    <footer>
+        <div class="container">
+            <div class="contact-info">
+                <h3>Entre em Contato</h3>
+                <p>Dúvidas, sugestões ou problemas? Estamos à disposição!</p>
+                <p>Email: seu-email@exemplo.com</p>
+                <p>Discord: SeuUsuario#0000</p>
+            </div>
+            
+            <div class="social-links">
+                <a href="#"><i class="fab fa-discord"></i></a>
+                <a href="#"><i class="fab fa-github"></i></a>
+                <a href="#"><i class="fab fa-instagram"></i></a>
+            </div>
+            
+            <div class="copyright">
+                <p>&copy; 2025 Bot Dimas - Todos os direitos reservados</p>
+                <p>Feito com ❤️ para a comunidade FiveM</p>
+            </div>
+        </div>
+    </footer>
 </body>
-</html>
+</html> 
