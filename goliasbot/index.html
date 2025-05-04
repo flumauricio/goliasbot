@@ -1,0 +1,200 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Golias BOT - Dashboard</title>
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css">
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.10.0/font/bootstrap-icons.css">
+    <link rel="stylesheet" href="css/style.css">
+    <link rel="icon" href="../assets/avatar.png" type="image/png">
+</head>
+<body>
+    <!-- Navbar -->
+    <nav class="navbar navbar-expand-lg navbar-dark bg-primary">
+        <div class="container">
+            <a class="navbar-brand" href="#">
+                <img src="../assets/avatar.png" alt="Golias BOT" width="30" height="30" class="d-inline-block align-top me-2">
+                Golias BOT
+            </a>
+            <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#navbarNav" aria-controls="navbarNav" aria-expanded="false" aria-label="Toggle navigation">
+                <span class="navbar-toggler-icon"></span>
+            </button>
+            <div class="collapse navbar-collapse" id="navbarNav">
+                <ul class="navbar-nav me-auto">
+                    <li class="nav-item">
+                        <a class="nav-link active" href="index.html"><i class="bi bi-house-door"></i> Início</a>
+                    </li>
+                    <li class="nav-item">
+                        <a class="nav-link" href="modules.html"><i class="bi bi-box"></i> Módulos</a>
+                    </li>
+                    <li class="nav-item">
+                        <a class="nav-link" href="manual/index.html"><i class="bi bi-book"></i> Manual</a>
+                    </li>
+                    <li class="nav-item">
+                        <a class="nav-link" href="faq.html"><i class="bi bi-question-circle"></i> FAQ</a>
+                    </li>
+                </ul>
+                <div class="d-flex">
+                    <a href="#" class="btn btn-outline-light me-2" id="loginBtn"><i class="bi bi-discord"></i> Entrar com Discord</a>
+                </div>
+            </div>
+        </div>
+    </nav>
+
+    <!-- Hero Section -->
+    <section class="hero-section text-center py-5">
+        <div class="container">
+            <h1 class="display-4 fw-bold mb-4">Golias BOT</h1>
+            <p class="lead mb-4">Um bot Discord com módulos alugáveis para administração de servidores</p>
+            <div class="d-grid gap-2 d-sm-flex justify-content-sm-center">
+                <a href="https://discord.com/api/oauth2/authorize?client_id=YOUR_CLIENT_ID&permissions=8&scope=bot%20applications.commands" class="btn btn-primary btn-lg px-4 gap-3">
+                    <i class="bi bi-plus-circle"></i> Adicionar ao Servidor
+                </a>
+                <a href="#features" class="btn btn-outline-secondary btn-lg px-4">
+                    <i class="bi bi-info-circle"></i> Saiba Mais
+                </a>
+            </div>
+        </div>
+    </section>
+
+    <!-- Features Section -->
+    <section id="features" class="py-5 bg-light">
+        <div class="container">
+            <h2 class="text-center mb-4">Recursos Principais</h2>
+            <div class="row g-4">
+                <div class="col-md-4">
+                    <div class="card h-100">
+                        <div class="card-body text-center">
+                            <i class="bi bi-box-seam feature-icon"></i>
+                            <h3 class="card-title">Módulos Alugáveis</h3>
+                            <p class="card-text">Pague apenas pelos módulos que utilizar. Sistema flexível e econômico para seu servidor.</p>
+                        </div>
+                    </div>
+                </div>
+                <div class="col-md-4">
+                    <div class="card h-100">
+                        <div class="card-body text-center">
+                            <i class="bi bi-shield-check feature-icon"></i>
+                            <h3 class="card-title">Moderação Avançada</h3>
+                            <p class="card-text">Sistema completo de advertências, punições automáticas e registro detalhado de ações.</p>
+                        </div>
+                    </div>
+                </div>
+                <div class="col-md-4">
+                    <div class="card h-100">
+                        <div class="card-body text-center">
+                            <i class="bi bi-credit-card feature-icon"></i>
+                            <h3 class="card-title">Pagamento Simples</h3>
+                            <p class="card-text">Integração com Mercado Pago para pagamentos rápidos e seguros via PIX.</p>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- Modules Section -->
+    <section id="modules" class="py-5">
+        <div class="container">
+            <h2 class="text-center mb-4">Módulos Disponíveis</h2>
+            <div class="row g-4">
+                <div class="col-md-4">
+                    <div class="card h-100">
+                        <div class="card-body">
+                            <h3 class="card-title">Sistema de Advertências</h3>
+                            <p class="card-text">Gerencie advertências de usuários com limite configurável e ações automáticas.</p>
+                            <ul class="list-unstyled">
+                                <li><i class="bi bi-check-circle text-success"></i> Advertências configuráveis</li>
+                                <li><i class="bi bi-check-circle text-success"></i> Ações automáticas</li>
+                                <li><i class="bi bi-check-circle text-success"></i> Registro de logs</li>
+                            </ul>
+                            <div class="text-center mt-3">
+                                <a href="manual/advertencias.html" class="btn btn-outline-primary">Saiba Mais</a>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+                <div class="col-md-4">
+                    <div class="card h-100">
+                        <div class="card-body">
+                            <h3 class="card-title">Controle de Ponto</h3>
+                            <p class="card-text">Gerencie a presença de membros com sistema de entrada e saída.</p>
+                            <ul class="list-unstyled">
+                                <li><i class="bi bi-check-circle text-success"></i> Registro de horas</li>
+                                <li><i class="bi bi-check-circle text-success"></i> Relatórios semanais</li>
+                                <li><i class="bi bi-check-circle text-success"></i> Lembretes automáticos</li>
+                            </ul>
+                            <div class="text-center mt-3">
+                                <a href="manual/ponto.html" class="btn btn-outline-primary">Saiba Mais</a>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+                <div class="col-md-4">
+                    <div class="card h-100">
+                        <div class="card-body">
+                            <h3 class="card-title">Em Breve</h3>
+                            <p class="card-text">Mais módulos serão adicionados em breve. Fique ligado para novidades!</p>
+                            <ul class="list-unstyled">
+                                <li><i class="bi bi-hourglass text-warning"></i> Economia e Loja</li>
+                                <li><i class="bi bi-hourglass text-warning"></i> Sistema de Níveis</li>
+                                <li><i class="bi bi-hourglass text-warning"></i> Auto-moderação</li>
+                            </ul>
+                            <div class="text-center mt-3">
+                                <button class="btn btn-outline-secondary" disabled>Em Desenvolvimento</button>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- CTA Section -->
+    <section class="py-5 bg-primary text-white text-center">
+        <div class="container">
+            <h2>Pronto para começar?</h2>
+            <p class="lead">Adicione o Golias BOT ao seu servidor e experimente!</p>
+            <a href="https://discord.com/api/oauth2/authorize?client_id=YOUR_CLIENT_ID&permissions=8&scope=bot%20applications.commands" class="btn btn-light btn-lg mt-3">
+                <i class="bi bi-plus-circle"></i> Adicionar ao Discord
+            </a>
+        </div>
+    </section>
+
+    <!-- Footer -->
+    <footer class="py-4 bg-dark text-white">
+        <div class="container">
+            <div class="row">
+                <div class="col-md-6">
+                    <h5>Golias BOT</h5>
+                    <p>Um bot Discord com módulos alugáveis para administração de servidores.</p>
+                </div>
+                <div class="col-md-3">
+                    <h5>Links</h5>
+                    <ul class="list-unstyled">
+                        <li><a href="#" class="text-white">Início</a></li>
+                        <li><a href="modules.html" class="text-white">Módulos</a></li>
+                        <li><a href="manual/index.html" class="text-white">Manual</a></li>
+                        <li><a href="faq.html" class="text-white">FAQ</a></li>
+                    </ul>
+                </div>
+                <div class="col-md-3">
+                    <h5>Contato</h5>
+                    <ul class="list-unstyled">
+                        <li><a href="https://discord.gg/seu-servidor" class="text-white"><i class="bi bi-discord"></i> Servidor de Suporte</a></li>
+                        <li><a href="https://github.com/seu-usuario/golias-bot" class="text-white"><i class="bi bi-github"></i> GitHub</a></li>
+                    </ul>
+                </div>
+            </div>
+            <hr>
+            <div class="text-center">
+                <p>&copy; 2023 Golias BOT. Todos os direitos reservados.</p>
+            </div>
+        </div>
+    </footer>
+
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
+    <script src="js/main.js"></script>
+</body>
+</html> 
