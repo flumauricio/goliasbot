@@ -1,0 +1,16 @@
+# Configurações com Tokens e Senhas (SEGURANÇA!)
+config.json
+.env
+
+# Banco de dados (Arquivos que mudam toda hora)
+*.sqlite
+*.db
+
+# Pastas temporárias do Python (Lixo de código)
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Ambiente Virtual
+venv/
+.venv/
