@@ -11,6 +11,19 @@ from .action_config_channel import ChannelSelectView
 LOGGER = logging.getLogger(__name__)
 
 
+class BackButton(discord.ui.Button):
+    """Botão para voltar ao dashboard principal."""
+    
+    def __init__(self, parent_view):
+        super().__init__(label="⬅️ Voltar ao Dashboard", style=discord.ButtonStyle.secondary, row=4)
+        self.parent_view = parent_view
+    
+    async def callback(self, interaction: discord.Interaction):
+        """Retorna ao dashboard principal."""
+        embed = await self.parent_view.build_embed()
+        await interaction.response.edit_message(embed=embed, view=self.parent_view)
+
+
 class ActionTypeModal(discord.ui.Modal, title="Criar Tipo de Ação"):
     """Modal para criar um novo tipo de ação."""
     
@@ -341,13 +354,18 @@ class DeleteAllActionsView(discord.ui.View):
 class ActionSetupView(discord.ui.View):
     """View principal de configuração de ações."""
     
-    def __init__(self, bot: commands.Bot, db: Database, guild: discord.Guild):
+    def __init__(self, bot: commands.Bot, db: Database, guild: discord.Guild, parent_view=None):
         super().__init__(timeout=None)
         self.bot = bot
         self.db = db
         self.guild = guild
+        self.parent_view = parent_view
         self.selected_type_id: Optional[int] = None
         self.setup_message: Optional[discord.Message] = None
+        
+        # Adiciona botão voltar se parent_view existir
+        if self.parent_view:
+            self.add_item(BackButton(self.parent_view))
     
     async def update_embed(self, interaction: Optional[discord.Interaction] = None):
         """Atualiza a embed de configuração."""

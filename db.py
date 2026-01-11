@@ -43,27 +43,27 @@ class Database:
                 updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
             """
-        )
-            await cur.execute(
-            """
-            CREATE TABLE IF NOT EXISTS settings (
-                guild_id TEXT PRIMARY KEY,
-                channel_registration_embed TEXT,
-                channel_welcome TEXT,
-                channel_warnings TEXT,
-                channel_leaves TEXT,
-                channel_approval TEXT,
-                channel_records TEXT,
-                role_set TEXT,
-                role_member TEXT,
-                role_adv1 TEXT,
-                role_adv2 TEXT,
-                message_set_embed TEXT,
-                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
-            """
-        )
-        # Migrações leves para colunas que podem faltar
+            await cur.execute(
+                """
+                CREATE TABLE IF NOT EXISTS settings (
+                    guild_id TEXT PRIMARY KEY,
+                    channel_registration_embed TEXT,
+                    channel_welcome TEXT,
+                    channel_warnings TEXT,
+                    channel_leaves TEXT,
+                    channel_approval TEXT,
+                    channel_records TEXT,
+                    role_set TEXT,
+                    role_member TEXT,
+                    role_adv1 TEXT,
+                    role_adv2 TEXT,
+                    message_set_embed TEXT,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+                """
+            )
+            # Migrações leves para colunas que podem faltar
             await cur.execute("PRAGMA table_info(settings)")
             rows = await cur.fetchall()
             cols = [row[1] for row in rows]
@@ -78,6 +78,7 @@ class Database:
             if "role_adv2" not in cols:
                 await cur.execute("ALTER TABLE settings ADD COLUMN role_adv2 TEXT")
 
+
             # Permissões de comandos por guild
             await cur.execute(
                 """
@@ -90,6 +91,7 @@ class Database:
                 """
             )
 
+            # Tabela para mapear server_id -> discord_id (otimização para busca de membros)
             # Tabela para mapear server_id -> discord_id (otimização para busca de membros)
             await cur.execute(
                 """
@@ -287,6 +289,80 @@ class Database:
                 )
                 """
             )
+            
+            # Tabelas do sistema de pontos por voz
+            await cur.execute(
+                """
+                CREATE TABLE IF NOT EXISTS voice_settings (
+                    guild_id TEXT PRIMARY KEY,
+                    monitor_all INTEGER NOT NULL DEFAULT 0,
+                    afk_channel_id TEXT
+                )
+                """
+            )
+            
+            # Tabela para gerenciar módulos por servidor
+            await cur.execute(
+                """
+                CREATE TABLE IF NOT EXISTS guild_modules (
+                    guild_id TEXT NOT NULL,
+                    module_name TEXT NOT NULL,
+                    is_active INTEGER NOT NULL DEFAULT 1,
+                    PRIMARY KEY (guild_id, module_name)
+                )
+                """
+            )
+            
+            await cur.execute(
+                """
+                CREATE TABLE IF NOT EXISTS voice_allowed_roles (
+                    guild_id TEXT NOT NULL,
+                    role_id TEXT NOT NULL,
+                    PRIMARY KEY (guild_id, role_id)
+                )
+                """
+            )
+            
+            await cur.execute(
+                """
+                CREATE TABLE IF NOT EXISTS voice_monitored_channels (
+                    guild_id TEXT NOT NULL,
+                    channel_id TEXT NOT NULL,
+                    PRIMARY KEY (guild_id, channel_id)
+                )
+                """
+            )
+            
+            await cur.execute(
+                """
+                CREATE TABLE IF NOT EXISTS voice_stats (
+                    guild_id TEXT NOT NULL,
+                    user_id TEXT NOT NULL,
+                    channel_id TEXT NOT NULL,
+                    total_seconds INTEGER NOT NULL DEFAULT 0,
+                    PRIMARY KEY (guild_id, user_id, channel_id)
+                )
+                """
+            )
+            
+            await cur.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_voice_stats_user 
+                ON voice_stats(guild_id, user_id)
+                """
+            )
+            
+            await cur.execute(
+                """
+                CREATE TABLE IF NOT EXISTS voice_active_sessions (
+                    user_id TEXT NOT NULL,
+                    guild_id TEXT NOT NULL,
+                    channel_id TEXT NOT NULL,
+                    join_time TIMESTAMP NOT NULL,
+                    PRIMARY KEY (user_id, guild_id)
+                )
+                """
+            )
 
         await self._conn.commit()
         LOGGER.info("Migrações aplicadas em %s", self.path)
@@ -347,6 +423,7 @@ class Database:
                 channel_registration_embed=excluded.channel_registration_embed,
                 channel_welcome=excluded.channel_welcome,
                 channel_warnings=excluded.channel_warnings,
+                channel_leaves=excluded.channel_leaves,
                 channel_approval=excluded.channel_approval,
                 channel_records=excluded.channel_records,
                 role_set=excluded.role_set,
@@ -358,17 +435,17 @@ class Database:
             """,
             (
                 str(guild_id),
-                merged.get("channel_registration_embed"),
-                merged.get("channel_welcome"),
-                merged.get("channel_warnings"),
-                merged.get("channel_leaves"),
-                merged.get("channel_approval"),
-                merged.get("channel_records"),
-                merged.get("role_set"),
-                merged.get("role_member"),
-                merged.get("role_adv1"),
-                merged.get("role_adv2"),
-                merged.get("message_set_embed"),
+                str(merged.get("channel_registration_embed")) if merged.get("channel_registration_embed") else None,
+                str(merged.get("channel_welcome")) if merged.get("channel_welcome") else None,
+                str(merged.get("channel_warnings")) if merged.get("channel_warnings") else None,
+                str(merged.get("channel_leaves")) if merged.get("channel_leaves") else None,
+                str(merged.get("channel_approval")) if merged.get("channel_approval") else None,
+                str(merged.get("channel_records")) if merged.get("channel_records") else None,
+                str(merged.get("role_set")) if merged.get("role_set") else None,
+                str(merged.get("role_member")) if merged.get("role_member") else None,
+                str(merged.get("role_adv1")) if merged.get("role_adv1") else None,
+                str(merged.get("role_adv2")) if merged.get("role_adv2") else None,
+                str(merged.get("message_set_embed")) if merged.get("message_set_embed") else None,
             ),
         )
         await self._conn.commit()
@@ -1644,6 +1721,297 @@ class Database:
             )
         await self._conn.commit()
     
+    # ===== Sistema de Pontos por Voz =====
+    
+    async def get_voice_settings(self, guild_id: int) -> Dict[str, Any]:
+        """Busca configurações de voz de uma guild."""
+        if not self._conn:
+            raise RuntimeError("Database não inicializado. Chame initialize() primeiro.")
+        
+        async with self._conn.cursor() as cur:
+            await cur.execute("SELECT * FROM voice_settings WHERE guild_id = ?", (str(guild_id),))
+            row = await cur.fetchone()
+            return dict(row) if row else {}
+    
+    async def upsert_voice_settings(
+        self,
+        guild_id: int,
+        monitor_all: Optional[bool] = None,
+        afk_channel_id: Optional[int] = None,
+    ) -> None:
+        """Atualiza ou cria configurações de voz."""
+        if not self._conn:
+            raise RuntimeError("Database não inicializado. Chame initialize() primeiro.")
+        
+        existing = await self.get_voice_settings(guild_id)
+        merged = {**existing}
+        
+        if monitor_all is not None:
+            merged["monitor_all"] = 1 if monitor_all else 0
+        if afk_channel_id is not None:
+            merged["afk_channel_id"] = str(afk_channel_id)
+        
+        async with self._conn.cursor() as cur:
+            await cur.execute(
+                """
+                INSERT INTO voice_settings (guild_id, monitor_all, afk_channel_id)
+                VALUES (?, ?, ?)
+                ON CONFLICT(guild_id) DO UPDATE SET
+                    monitor_all = COALESCE(excluded.monitor_all, monitor_all),
+                    afk_channel_id = COALESCE(excluded.afk_channel_id, afk_channel_id)
+                """,
+                (
+                    str(guild_id),
+                    merged.get("monitor_all", 0),
+                    merged.get("afk_channel_id"),
+                ),
+            )
+        await self._conn.commit()
+    
+    async def get_allowed_roles(self, guild_id: int) -> Tuple[int, ...]:
+        """Busca todos os cargos permitidos para monitoramento."""
+        if not self._conn:
+            raise RuntimeError("Database não inicializado. Chame initialize() primeiro.")
+        
+        async with self._conn.cursor() as cur:
+            await cur.execute(
+                "SELECT role_id FROM voice_allowed_roles WHERE guild_id = ?",
+                (str(guild_id),),
+            )
+            rows = await cur.fetchall()
+            return tuple(int(row[0]) for row in rows if row[0] and str(row[0]).isdigit())
+    
+    async def add_allowed_role(self, guild_id: int, role_id: int) -> None:
+        """Adiciona um cargo à lista de permitidos."""
+        if not self._conn:
+            raise RuntimeError("Database não inicializado. Chame initialize() primeiro.")
+        
+        async with self._conn.cursor() as cur:
+            await cur.execute(
+                "INSERT OR IGNORE INTO voice_allowed_roles (guild_id, role_id) VALUES (?, ?)",
+                (str(guild_id), str(role_id)),
+            )
+        await self._conn.commit()
+    
+    async def remove_allowed_role(self, guild_id: int, role_id: int) -> None:
+        """Remove um cargo da lista de permitidos."""
+        if not self._conn:
+            raise RuntimeError("Database não inicializado. Chame initialize() primeiro.")
+        
+        async with self._conn.cursor() as cur:
+            await cur.execute(
+                "DELETE FROM voice_allowed_roles WHERE guild_id = ? AND role_id = ?",
+                (str(guild_id), str(role_id)),
+            )
+        await self._conn.commit()
+    
+    async def get_monitored_channels(self, guild_id: int) -> Tuple[int, ...]:
+        """Busca todos os canais monitorados."""
+        if not self._conn:
+            raise RuntimeError("Database não inicializado. Chame initialize() primeiro.")
+        
+        async with self._conn.cursor() as cur:
+            await cur.execute(
+                "SELECT channel_id FROM voice_monitored_channels WHERE guild_id = ?",
+                (str(guild_id),),
+            )
+            rows = await cur.fetchall()
+            return tuple(int(row[0]) for row in rows if row[0] and str(row[0]).isdigit())
+    
+    async def add_monitored_channel(self, guild_id: int, channel_id: int) -> None:
+        """Adiciona um canal à lista de monitorados."""
+        if not self._conn:
+            raise RuntimeError("Database não inicializado. Chame initialize() primeiro.")
+        
+        async with self._conn.cursor() as cur:
+            await cur.execute(
+                "INSERT OR IGNORE INTO voice_monitored_channels (guild_id, channel_id) VALUES (?, ?)",
+                (str(guild_id), str(channel_id)),
+            )
+        await self._conn.commit()
+    
+    async def remove_monitored_channel(self, guild_id: int, channel_id: int) -> None:
+        """Remove um canal da lista de monitorados."""
+        if not self._conn:
+            raise RuntimeError("Database não inicializado. Chame initialize() primeiro.")
+        
+        async with self._conn.cursor() as cur:
+            await cur.execute(
+                "DELETE FROM voice_monitored_channels WHERE guild_id = ? AND channel_id = ?",
+                (str(guild_id), str(channel_id)),
+            )
+        await self._conn.commit()
+    
+    async def get_voice_stats(self, guild_id: int, user_id: int) -> Tuple[Dict[str, Any], ...]:
+        """Busca estatísticas de voz do usuário por canal."""
+        if not self._conn:
+            raise RuntimeError("Database não inicializado. Chame initialize() primeiro.")
+        
+        async with self._conn.cursor() as cur:
+            await cur.execute(
+                "SELECT * FROM voice_stats WHERE guild_id = ? AND user_id = ? ORDER BY total_seconds DESC",
+                (str(guild_id), str(user_id)),
+            )
+            rows = await cur.fetchall()
+            return tuple(dict(row) for row in rows)
+    
+    async def get_total_voice_time(self, guild_id: int, user_id: int) -> int:
+        """Retorna o tempo total em segundos do usuário (soma de todos os canais)."""
+        if not self._conn:
+            raise RuntimeError("Database não inicializado. Chame initialize() primeiro.")
+        
+        async with self._conn.cursor() as cur:
+            await cur.execute(
+                "SELECT SUM(total_seconds) FROM voice_stats WHERE guild_id = ? AND user_id = ?",
+                (str(guild_id), str(user_id)),
+            )
+            row = await cur.fetchone()
+            return int(row[0]) if row and row[0] else 0
+    
+    async def increment_voice_time(self, guild_id: int, user_id: int, channel_id: int, seconds: int) -> None:
+        """Incrementa o tempo de voz do usuário em um canal."""
+        if not self._conn:
+            raise RuntimeError("Database não inicializado. Chame initialize() primeiro.")
+        
+        async with self._conn.cursor() as cur:
+            await cur.execute(
+                """
+                INSERT INTO voice_stats (guild_id, user_id, channel_id, total_seconds)
+                VALUES (?, ?, ?, ?)
+                ON CONFLICT(guild_id, user_id, channel_id) DO UPDATE SET
+                    total_seconds = total_seconds + excluded.total_seconds
+                """,
+                (str(guild_id), str(user_id), str(channel_id), seconds),
+            )
+        await self._conn.commit()
+    
+    async def get_voice_ranking(self, guild_id: int, limit: int = 10) -> Tuple[Dict[str, Any], ...]:
+        """Retorna ranking de tempo total por usuário."""
+        if not self._conn:
+            raise RuntimeError("Database não inicializado. Chame initialize() primeiro.")
+        
+        async with self._conn.cursor() as cur:
+            await cur.execute(
+                """
+                SELECT guild_id, user_id, SUM(total_seconds) as total_seconds
+                FROM voice_stats
+                WHERE guild_id = ?
+                GROUP BY guild_id, user_id
+                ORDER BY total_seconds DESC
+                LIMIT ?
+                """,
+                (str(guild_id), limit),
+            )
+            rows = await cur.fetchall()
+            return tuple(dict(row) for row in rows)
+    
+    async def create_voice_session(self, user_id: int, guild_id: int, channel_id: int) -> None:
+        """Cria uma sessão ativa de voz."""
+        if not self._conn:
+            raise RuntimeError("Database não inicializado. Chame initialize() primeiro.")
+        
+        async with self._conn.cursor() as cur:
+            await cur.execute(
+                """
+                INSERT INTO voice_active_sessions (user_id, guild_id, channel_id, join_time)
+                VALUES (?, ?, ?, CURRENT_TIMESTAMP)
+                ON CONFLICT(user_id, guild_id) DO UPDATE SET
+                    channel_id = excluded.channel_id,
+                    join_time = CURRENT_TIMESTAMP
+                """,
+                (str(user_id), str(guild_id), str(channel_id)),
+            )
+        await self._conn.commit()
+    
+    async def get_voice_session(self, user_id: int, guild_id: int) -> Optional[Dict[str, Any]]:
+        """Busca uma sessão ativa de voz."""
+        if not self._conn:
+            raise RuntimeError("Database não inicializado. Chame initialize() primeiro.")
+        
+        async with self._conn.cursor() as cur:
+            await cur.execute(
+                "SELECT * FROM voice_active_sessions WHERE user_id = ? AND guild_id = ?",
+                (str(user_id), str(guild_id)),
+            )
+            row = await cur.fetchone()
+            return dict(row) if row else None
+    
+    async def delete_voice_session(self, user_id: int, guild_id: int) -> None:
+        """Remove uma sessão ativa de voz."""
+        if not self._conn:
+            raise RuntimeError("Database não inicializado. Chame initialize() primeiro.")
+        
+        async with self._conn.cursor() as cur:
+            await cur.execute(
+                "DELETE FROM voice_active_sessions WHERE user_id = ? AND guild_id = ?",
+                (str(user_id), str(guild_id)),
+            )
+        await self._conn.commit()
+    
+    async def cleanup_stale_sessions(self, guild_id: int, active_user_ids: set) -> None:
+        """Remove sessões de usuários que não estão mais em call."""
+        if not self._conn:
+            raise RuntimeError("Database não inicializado. Chame initialize() primeiro.")
+        
+        async with self._conn.cursor() as cur:
+            # Busca todas as sessões ativas do servidor
+            await cur.execute(
+                "SELECT user_id FROM voice_active_sessions WHERE guild_id = ?",
+                (str(guild_id),),
+            )
+            rows = await cur.fetchall()
+            session_user_ids = {int(row[0]) for row in rows if row[0] and str(row[0]).isdigit()}
+            
+            # Remove sessões de usuários que não estão mais em call
+            stale_ids = session_user_ids - active_user_ids
+            if stale_ids:
+                placeholders = ",".join("?" * len(stale_ids))
+                await cur.execute(
+                    f"DELETE FROM voice_active_sessions WHERE guild_id = ? AND user_id IN ({placeholders})",
+                    (str(guild_id),) + tuple(str(uid) for uid in stale_ids),
+                )
+        await self._conn.commit()
+
+    # Métodos para gerenciar módulos por servidor
+    async def get_module_status(self, guild_id: int, module_name: str) -> bool:
+        """Retorna se um módulo está ativo para um servidor."""
+        if not self._conn:
+            raise RuntimeError("Database não inicializado. Chame initialize() primeiro.")
+
+        async with self._conn.cursor() as cur:
+            await cur.execute(
+                "SELECT is_active FROM guild_modules WHERE guild_id = ? AND module_name = ?",
+                (str(guild_id), module_name),
+            )
+            row = await cur.fetchone()
+            return bool(row[0]) if row else True  # Padrão: ativo se não existir registro
+
+    async def set_module_status(self, guild_id: int, module_name: str, is_active: bool) -> None:
+        """Define o status de um módulo para um servidor."""
+        if not self._conn:
+            raise RuntimeError("Database não inicializado. Chame initialize() primeiro.")
+
+        async with self._conn.cursor() as cur:
+            await cur.execute(
+                """
+                INSERT OR REPLACE INTO guild_modules (guild_id, module_name, is_active)
+                VALUES (?, ?, ?)
+                """,
+                (str(guild_id), module_name, 1 if is_active else 0),
+            )
+        await self._conn.commit()
+
+    async def get_all_modules_status(self, guild_id: int) -> Dict[str, bool]:
+        """Retorna um dicionário com o status de todos os módulos para um servidor."""
+        if not self._conn:
+            raise RuntimeError("Database não inicializado. Chame initialize() primeiro.")
+        async with self._conn.cursor() as cur:
+            await cur.execute(
+                "SELECT module_name, is_active FROM guild_modules WHERE guild_id = ?",
+                (str(guild_id),),
+            )
+            rows = await cur.fetchall()
+            return {row[0]: bool(row[1]) for row in rows}
     async def close(self) -> None:
         """Fecha a conexão com o banco de dados."""
         if self._conn:

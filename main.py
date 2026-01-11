@@ -21,9 +21,12 @@ from actions import (
     ActionCog,
     ActionView,
     InviteCog,
+    VoiceConfigCog,
+    VoiceMonitorCog,
+    VoiceCommandsCog,
 )
 # IMPORTAR O NOVO COG
-from actions.server_manage import ServerManageCog
+from actions.server_manage import ServerManageCog 
 from actions.help_command import HelpCog 
 
 from config_manager import ConfigManager
@@ -64,6 +67,9 @@ async def build_bot() -> commands.Bot:
             await self.add_cog(ServerManageCog(self))
             await self.add_cog(HelpCog(self))
             await self.add_cog(InviteCog(self))
+            await self.add_cog(VoiceConfigCog(self, db))
+            await self.add_cog(VoiceMonitorCog(self, db))
+            await self.add_cog(VoiceCommandsCog(self, db))
             
             self.add_view(RegistrationView(db, config))
             self.add_view(TicketOpenView(db))
@@ -78,6 +84,20 @@ async def build_bot() -> commands.Bot:
     @bot.event
     async def on_ready():
         LOGGER.info("Bot conectado como %s", bot.user)
+        
+        # Limpa sessões órfãs de voz
+        for guild in bot.guilds:
+            try:
+                # Coleta IDs de usuários realmente em call
+                active_user_ids = set()
+                for channel in guild.voice_channels:
+                    for member in channel.members:
+                        active_user_ids.add(member.id)
+                
+                # Limpa sessões de usuários que não estão mais em call
+                await db.cleanup_stale_sessions(guild.id, active_user_ids)
+            except Exception as exc:
+                LOGGER.error("Erro ao limpar sessões órfãs em %s: %s", guild.id, exc)
 
     @bot.event
     async def on_command_error(ctx, error):

@@ -9,6 +9,14 @@ from .ticket_command import TicketCog, TicketOpenView, TicketControlView
 from .action_config import ActionConfigCog
 from .action_system import ActionCog, ActionView
 from .invite_command import InviteCog
+from .voice_config import VoiceConfigCog, VoiceSetupView
+from .voice_monitor import VoiceMonitorCog
+from .voice_commands import VoiceCommandsCog
+from .voice_utils import format_time
+from .action_config import ActionSetupView
+from .ticket_command import TicketSetupView
+from .registration_config import RegistrationConfigView
+from .permissions_config import PermissionsView
 
 __all__ = [
     "SetupCog",
@@ -27,5 +35,14 @@ __all__ = [
     "ActionCog",
     "ActionView",
     "InviteCog",
+    "VoiceConfigCog",
+    "VoiceMonitorCog",
+    "VoiceCommandsCog",
+    "format_time",
+    "VoiceSetupView",
+    "ActionSetupView",
+    "TicketSetupView",
+    "RegistrationConfigView",
+    "PermissionsView",
 ]
 

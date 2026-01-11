@@ -19,11 +19,13 @@ class InviteCog(commands.Cog):
             await ctx.reply("❌ Bot não está pronto ainda. Tente novamente em alguns instantes.")
             return
         
-        # Gera link de convite usando OAuth URL
+        # Gera link de convite público usando OAuth URL
+        # Não passar 'guild' garante que o link seja público e qualquer pessoa possa adicionar o bot
         invite_url = discord.utils.oauth_url(
             client_id=self.bot.user.id,
             permissions=discord.Permissions(administrator=True),
             scopes=["bot", "applications.commands"]
+            # Não passar 'guild' = link público, qualquer um pode adicionar
         )
         
         # Cria embed elegante

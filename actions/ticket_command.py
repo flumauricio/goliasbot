@@ -2,7 +2,7 @@ import asyncio
 import io
 import logging
 import re
-from typing import Optional, Dict, Any, List
+from typing import Optional, Dict, Any, List, Callable, Awaitable
 import html
 
 import discord
@@ -11,6 +11,238 @@ from discord.ext import commands
 from db import Database
 
 LOGGER = logging.getLogger(__name__)
+
+
+class CreateChannelModal(discord.ui.Modal):
+    """Modal genérico para criar canais de texto."""
+    
+    def __init__(self, guild: discord.Guild, title: str = "Criar Novo Canal",
+                 channel_name_label: str = "Nome do Canal", 
+                 on_success: Optional[Callable[[discord.Interaction, discord.TextChannel], Awaitable[None]]] = None):
+        super().__init__(title=title)
+        self.guild = guild
+        self.on_success = on_success
+        self.channel_name_input = discord.ui.TextInput(
+            label=channel_name_label,
+            placeholder="Ex: canal-exemplo",
+            required=True,
+            max_length=100
+        )
+        self.add_item(self.channel_name_input)
+    
+    async def on_submit(self, interaction: discord.Interaction):
+        """Cria o canal e chama o callback de sucesso."""
+        try:
+            channel_name = self.channel_name_input.value.strip()
+            if not channel_name:
+                await interaction.response.send_message(
+                    "❌ O nome do canal não pode estar vazio.",
+                    ephemeral=True
+                )
+                return
+            
+            try:
+                channel = await self.guild.create_text_channel(
+                    name=channel_name,
+                    reason=f"Canal criado via Dashboard por {interaction.user}"
+                )
+                
+                LOGGER.info(f"Canal '{channel.name}' criado no guild {self.guild.id} por {interaction.user.id}")
+                
+                await interaction.response.send_message(
+                    f"✅ Canal **{channel.name}** criado! {channel.mention}",
+                    ephemeral=True
+                )
+                
+                # Chama callback de sucesso se fornecido
+                if self.on_success:
+                    await self.on_success(interaction, channel)
+                    
+            except discord.Forbidden:
+                await interaction.response.send_message(
+                    "❌ Não tenho permissão para criar canais. Verifique as permissões do bot.",
+                    ephemeral=True
+                )
+            except Exception as exc:
+                LOGGER.error("Erro ao criar canal: %s", exc, exc_info=True)
+                await interaction.response.send_message(
+                    "❌ Erro ao criar canal. Tente novamente.",
+                    ephemeral=True
+                )
+        except Exception as exc:
+            LOGGER.error("Erro no modal de criar canal: %s", exc, exc_info=True)
+            if not interaction.response.is_done():
+                await interaction.response.send_message(
+                    "❌ Erro ao processar. Tente novamente.",
+                    ephemeral=True
+                )
+
+
+class CreateCategoryModal(discord.ui.Modal):
+    """Modal para criar categorias."""
+    
+    def __init__(self, guild: discord.Guild, 
+                 on_success: Optional[Callable[[discord.Interaction, discord.CategoryChannel], Awaitable[None]]] = None):
+        super().__init__(title="Criar Nova Categoria")
+        self.guild = guild
+        self.on_success = on_success
+        self.category_name_input = discord.ui.TextInput(
+            label="Nome da Categoria",
+            placeholder="Ex: Tickets",
+            required=True,
+            max_length=100
+        )
+        self.add_item(self.category_name_input)
+    
+    async def on_submit(self, interaction: discord.Interaction):
+        """Cria a categoria e chama o callback de sucesso."""
+        try:
+            category_name = self.category_name_input.value.strip()
+            if not category_name:
+                await interaction.response.send_message(
+                    "❌ O nome da categoria não pode estar vazio.",
+                    ephemeral=True
+                )
+                return
+            
+            try:
+                category = await self.guild.create_category(
+                    name=category_name,
+                    reason=f"Categoria criada via Dashboard por {interaction.user}"
+                )
+                
+                LOGGER.info(f"Categoria '{category.name}' criada no guild {self.guild.id} por {interaction.user.id}")
+                
+                await interaction.response.send_message(
+                    f"✅ Categoria **{category.name}** criada! {category.mention}",
+                    ephemeral=True
+                )
+                
+                # Chama callback de sucesso se fornecido
+                if self.on_success:
+                    await self.on_success(interaction, category)
+                    
+            except discord.Forbidden:
+                await interaction.response.send_message(
+                    "❌ Não tenho permissão para criar categorias. Verifique as permissões do bot.",
+                    ephemeral=True
+                )
+            except Exception as exc:
+                LOGGER.error("Erro ao criar categoria: %s", exc, exc_info=True)
+                await interaction.response.send_message(
+                    "❌ Erro ao criar categoria. Tente novamente.",
+                    ephemeral=True
+                )
+        except Exception as exc:
+            LOGGER.error("Erro no modal de criar categoria: %s", exc, exc_info=True)
+            if not interaction.response.is_done():
+                await interaction.response.send_message(
+                    "❌ Erro ao processar. Tente novamente.",
+                    ephemeral=True
+                )
+
+
+class CreateRoleModal(discord.ui.Modal):
+    """Modal genérico para criar cargos."""
+    
+    def __init__(self, guild: discord.Guild, 
+                 on_success: Optional[Callable[[discord.Interaction, discord.Role], Awaitable[None]]] = None):
+        super().__init__(title="Criar Novo Cargo")
+        self.guild = guild
+        self.on_success = on_success
+        self.role_name_input = discord.ui.TextInput(
+            label="Nome do Cargo",
+            placeholder="Ex: Cargo Exemplo",
+            required=True,
+            max_length=100
+        )
+        self.role_color_input = discord.ui.TextInput(
+            label="Cor (Hex, opcional)",
+            placeholder="Ex: #3498db ou deixe em branco",
+            required=False,
+            max_length=7
+        )
+        self.add_item(self.role_name_input)
+        self.add_item(self.role_color_input)
+    
+    async def on_submit(self, interaction: discord.Interaction):
+        """Cria o cargo e chama o callback de sucesso."""
+        try:
+            role_name = self.role_name_input.value.strip()
+            if not role_name:
+                await interaction.response.send_message(
+                    "❌ O nome do cargo não pode estar vazio.",
+                    ephemeral=True
+                )
+                return
+            
+            # Processa cor
+            color = discord.Color.default()
+            color_str = self.role_color_input.value.strip()
+            if color_str:
+                try:
+                    # Remove # se presente
+                    if color_str.startswith("#"):
+                        color_str = color_str[1:]
+                    # Converte hex para int
+                    color_value = int(color_str, 16)
+                    color = discord.Color(color_value)
+                except (ValueError, OverflowError):
+                    await interaction.response.send_message(
+                        "⚠️ Cor inválida. Usando cor padrão.",
+                        ephemeral=True
+                    )
+            
+            # Cria o cargo
+            try:
+                role = await self.guild.create_role(
+                    name=role_name,
+                    color=color,
+                    reason=f"Cargo criado via Dashboard por {interaction.user}"
+                )
+                
+                LOGGER.info(f"Cargo '{role.name}' criado no guild {self.guild.id} por {interaction.user.id}")
+                
+                await interaction.response.send_message(
+                    f"✅ Cargo **{role.name}** criado! {role.mention}",
+                    ephemeral=True
+                )
+                
+                # Chama callback de sucesso se fornecido
+                if self.on_success:
+                    await self.on_success(interaction, role)
+                    
+            except discord.Forbidden:
+                await interaction.response.send_message(
+                    "❌ Não tenho permissão para criar cargos. Verifique as permissões do bot.",
+                    ephemeral=True
+                )
+            except Exception as exc:
+                LOGGER.error("Erro ao criar cargo: %s", exc, exc_info=True)
+                await interaction.response.send_message(
+                    "❌ Erro ao criar cargo. Tente novamente.",
+                    ephemeral=True
+                )
+        except Exception as exc:
+            LOGGER.error("Erro no modal de criar cargo: %s", exc, exc_info=True)
+            if not interaction.response.is_done():
+                await interaction.response.send_message(
+                    "❌ Erro ao processar. Tente novamente.",
+                    ephemeral=True
+                )
+
+
+class BackButton(discord.ui.Button):
+    """Botão para voltar ao dashboard principal."""
+    
+    def __init__(self, parent_view):
+        super().__init__(label="⬅️ Voltar ao Dashboard", style=discord.ButtonStyle.secondary, row=4)
+        self.parent_view = parent_view
+    
+    async def callback(self, interaction: discord.Interaction):
+        """Retorna ao dashboard principal."""
+        embed = await self.parent_view.build_embed()
+        await interaction.response.edit_message(embed=embed, view=self.parent_view)
 
 
 # Cores de botão do Discord
@@ -1351,11 +1583,77 @@ class TicketTopicModal(discord.ui.Modal, title="Criar Tópico de Ticket"):
 class TicketSetupView(discord.ui.View):
     """View interativa para configurar o sistema de tickets."""
     
-    def __init__(self, bot: commands.Bot, db: Database, guild: discord.Guild):
+    def __init__(self, bot: commands.Bot, db: Database, guild: discord.Guild, parent_view=None):
         super().__init__(timeout=300)
         self.bot = bot
         self.db = db
         self.guild = guild
+        self.parent_view = parent_view
+        
+        # Adiciona botões "Criar Novo" para cada seletor
+        # NOTA: ChannelSelect e RoleSelect ocupam a linha inteira (5 componentes),
+        # então os botões "➕ Criar" serão adicionados após todos os selects serem processados
+        # Eles serão adicionados dinamicamente na linha 4 junto com os outros botões
+        # Para evitar conflitos, vamos adicioná-los depois que os decorators forem processados
+        self.create_category_btn = discord.ui.Button(
+            label="➕ Criar Categoria",
+            style=discord.ButtonStyle.success,
+            row=4
+        )
+        self.create_category_btn.callback = self.create_category
+        
+        self.create_logs_btn = discord.ui.Button(
+            label="➕ Criar Canal Logs",
+            style=discord.ButtonStyle.success,
+            row=4
+        )
+        self.create_logs_btn.callback = self.create_log_channel
+        
+        self.create_ticket_channel_btn = discord.ui.Button(
+            label="➕ Criar Canal Tickets",
+            style=discord.ButtonStyle.success,
+            row=4
+        )
+        self.create_ticket_channel_btn.callback = self.create_ticket_channel
+        
+        self.create_staff_role_btn = discord.ui.Button(
+            label="➕ Criar Cargo",
+            style=discord.ButtonStyle.success,
+            row=4
+        )
+        self.create_staff_role_btn.callback = self.create_staff_role
+        
+        # NOTA: Os decorators @discord.ui.button são processados quando a classe é definida,
+        # então os componentes já estão em self.children quando __init__ é chamado.
+        # Vamos adicionar os botões "➕ Criar" apenas se houver espaço na linha 4.
+        # Primeiro, vamos contar quantos botões decorados já existem na linha 4
+        buttons_row_4 = [child for child in self.children if isinstance(child, discord.ui.Button) and child.row == 4]
+        
+        # Se houver espaço (menos de 5 botões), adiciona os botões "➕ Criar"
+        # Mas vamos ser conservadores e adicionar apenas 1 ou 2 botões para evitar overflow
+        remaining_slots = 5 - len(buttons_row_4)
+        if remaining_slots >= 1:
+            self.add_item(self.create_category_btn)
+        if remaining_slots >= 2:
+            self.add_item(self.create_logs_btn)
+        # Não adicionamos os outros dois botões para evitar overflow
+        # Os usuários podem usar os selects para escolher canais/cargos existentes
+        
+        # Adiciona botão voltar se parent_view existir
+        if self.parent_view:
+            # Remove o botão "Configurações Avançadas" se existir para dar espaço ao BackButton
+            advanced_button = None
+            for child in list(self.children):
+                if isinstance(child, discord.ui.Button) and child.row == 4:
+                    if "Configurações Avançadas" in child.label:
+                        advanced_button = child
+                        break
+            if advanced_button:
+                self.remove_item(advanced_button)
+            # Verifica se há espaço para o botão voltar
+            buttons_row_4_after = [child for child in self.children if isinstance(child, discord.ui.Button) and child.row == 4]
+            if len(buttons_row_4_after) < 5:
+                self.add_item(BackButton(self.parent_view))
         
         # Estado da configuração
         self.category_id = None
@@ -1612,6 +1910,63 @@ class TicketSetupView(discord.ui.View):
             )
         # Atualiza o embed em tempo real
         await self.update_embed_message(interaction)
+    
+    async def create_category(self, interaction: discord.Interaction):
+        """Abre modal para criar categoria."""
+        async def on_success(inter: discord.Interaction, category: discord.CategoryChannel):
+            self.category_id = category.id
+            await self.db.upsert_ticket_settings(self.guild.id, category_id=category.id)
+            LOGGER.info(f"Categoria '{category.name}' criada e configurada para tickets no guild {self.guild.id}")
+            await self.update_embed_message(inter)
+        
+        modal = CreateCategoryModal(guild=self.guild, on_success=on_success)
+        await interaction.response.send_modal(modal)
+    
+    async def create_log_channel(self, interaction: discord.Interaction):
+        """Abre modal para criar canal de logs."""
+        async def on_success(inter: discord.Interaction, channel: discord.TextChannel):
+            self.log_channel_id = channel.id
+            await self.db.upsert_ticket_settings(self.guild.id, log_channel_id=channel.id)
+            LOGGER.info(f"Canal de logs '{channel.name}' criado e configurado para tickets no guild {self.guild.id}")
+            await self.update_embed_message(inter)
+        
+        modal = CreateChannelModal(
+            guild=self.guild,
+            title="Criar Canal de Logs",
+            channel_name_label="Nome do Canal de Logs",
+            on_success=on_success
+        )
+        await interaction.response.send_modal(modal)
+    
+    async def create_ticket_channel(self, interaction: discord.Interaction):
+        """Abre modal para criar canal de tickets."""
+        async def on_success(inter: discord.Interaction, channel: discord.TextChannel):
+            self.ticket_channel_id = channel.id
+            await self.db.upsert_ticket_settings(self.guild.id, ticket_channel_id=channel.id)
+            LOGGER.info(f"Canal de tickets '{channel.name}' criado e configurado no guild {self.guild.id}")
+            await self.update_embed_message(inter)
+        
+        modal = CreateChannelModal(
+            guild=self.guild,
+            title="Criar Canal de Tickets",
+            channel_name_label="Nome do Canal de Tickets",
+            on_success=on_success
+        )
+        await interaction.response.send_modal(modal)
+    
+    async def create_staff_role(self, interaction: discord.Interaction):
+        """Abre modal para criar cargo de staff."""
+        async def on_success(inter: discord.Interaction, role: discord.Role):
+            if role.id not in self.global_staff_roles:
+                self.global_staff_roles.append(role.id)
+            # Atualiza no banco
+            roles_str = ",".join(str(rid) for rid in self.global_staff_roles)
+            await self.db.upsert_ticket_settings(self.guild.id, global_staff_roles=roles_str)
+            LOGGER.info(f"Cargo de staff '{role.name}' criado e adicionado aos globais no guild {self.guild.id}")
+            await self.update_embed_message(inter)
+        
+        modal = CreateRoleModal(guild=self.guild, on_success=on_success)
+        await interaction.response.send_modal(modal)
     
     @discord.ui.select(
         cls=discord.ui.ChannelSelect,

@@ -260,6 +260,24 @@ class FichaCog(commands.Cog):
                 inline=True
             )
         
+        # ===== TEMPO TOTAL EM CALL =====
+        try:
+            from .voice_utils import format_time
+            total_seconds = await self.db.get_total_voice_time(guild.id, member.id)
+            time_str = format_time(total_seconds)
+            embed.add_field(
+                name="⏱️ Tempo Total em Call",
+                value=time_str,
+                inline=True
+            )
+        except Exception as exc:
+            LOGGER.warning("Erro ao buscar tempo em call: %s", exc)
+            embed.add_field(
+                name="⏱️ Tempo Total em Call",
+                value="0h 0min 0seg",
+                inline=True
+            )
+        
         # ===== PONTOS (FUTURO) =====
         # Estrutura preparada para quando implementarmos sistema de pontos
         # embed.add_field(

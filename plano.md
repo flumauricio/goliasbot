@@ -148,6 +148,15 @@
 - ✅ **Uso**: Utilizado pelo comando `!ficha` para buscar dados de cadastro
 
 ### Bugs conhecidos e soluções
+
+#### Bugs Corrigidos Recentemente:
+- ✅ **Erro de Indentação no método `migrate()`**: Corrigida indentação de linhas 46, 65, 66-79 que estavam fechando prematuramente o bloco `async with`
+- ✅ **Erro de Sintaxe SQL na tabela `member_server_ids`**: Adicionadas definições das colunas antes das constraints PRIMARY KEY e UNIQUE
+- ✅ **Erro de Sintaxe na linha 2007**: Separadas duas declarações que estavam na mesma linha (`raise RuntimeError` e `async with`)
+- ✅ **ValueError no ticket_command.py (row 0)**: Corrigido layout UI onde botões "➕ Criar" estavam tentando compartilhar linha 0 com `ChannelSelect` que ocupa linha inteira. Botões movidos para linha 4 com lógica dinâmica para respeitar limite de 5 componentes por linha. Apenas 1-2 botões "➕ Criar" são adicionados para evitar overflow
+- ✅ **AttributeError no voice_config.py**: Adicionado método `create_voice_channel` faltante na classe `VoiceChannelSelectView` com modal para criar novos canais de voz
+
+#### Pendências:
 - **Pendência**: `ServerManageCog` não está exportado no `actions/__init__.py` (precisa adicionar ao `__all__`).
 - **Pendência**: Arquivo `set_command.py` na raiz parece ser duplicado/obsoleto (verificar e remover se necessário).
 
