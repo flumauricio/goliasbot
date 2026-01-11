@@ -44,7 +44,7 @@ class ServerManageCog(commands.Cog):
     @commands.command(name="servidores")
     @commands.has_permissions(administrator=True)
     async def list_servers(self, ctx: commands.Context):
-        """Lista os servidores onde o bot está presente."""
+        """Lista os servidores onde o bot está presente e permite sair deles."""
         guilds = list(self.bot.guilds)
         
         if not guilds:

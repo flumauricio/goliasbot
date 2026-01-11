@@ -18,20 +18,15 @@ class SetCog(commands.Cog):
     @commands.command(name="set")
     @command_guard("set")
     async def set_registration_embed(self, ctx: commands.Context):
+        """Publica ou atualiza o embed de cadastro no canal configurado."""
         guild = ctx.guild
         if not guild:
             await ctx.reply("Apenas em servidores.")
             return
 
-        # Busca configurações no Banco de Dados
-        settings = self.db.get_settings(guild.id)
-        channels = self.config.guild_channels(guild.id)
-        
-        channel_id = (
-            settings.get("channel_registration_embed")
-            or channels.get("registration_embed")
-            or channels.get("channel_registration_embed")
-        )
+        # Busca configurações no Banco de Dados (fonte única de verdade)
+        settings = await self.db.get_settings(guild.id)
+        channel_id = settings.get("channel_registration_embed")
 
         if not channel_id:
             await ctx.reply("Canal de cadastro não configurado. Rode !setup primeiro.")
@@ -73,10 +68,7 @@ class SetCog(commands.Cog):
         view = RegistrationView(self.db, self.config)
 
         # Verifica se já existe uma mensagem enviada anteriormente para editar
-        existing_message_id = (
-            settings.get("message_set_embed") 
-            or self.config.guild_messages(guild.id).get("set_embed")
-        )
+        existing_message_id = settings.get("message_set_embed")
 
         message = None
         if existing_message_id:
@@ -89,14 +81,11 @@ class SetCog(commands.Cog):
         if not message:
             message = await target_channel.send(embed=embed, view=view)
 
-        # Salva as configurações atualizadas no Banco
-        self.db.upsert_settings(
+        # Salva as configurações atualizadas no Banco (fonte única de verdade)
+        await self.db.upsert_settings(
             guild.id,
             channel_registration_embed=int(channel_id),
             message_set_embed=message.id,
         )
         
-        # Sincroniza com o arquivo config.json
-        self.config.set_guild_value(guild.id, "messages", "set_embed", str(message.id))
-        
-        await ctx.reply(f"Painel de cadastro configurado com sucesso em {target_channel.mention}!")
+        await ctx.reply(f"✅ Painel de cadastro configurado com sucesso em {target_channel.mention}!")

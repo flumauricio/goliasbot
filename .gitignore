@@ -1,16 +1,49 @@
 # Configurações com Tokens e Senhas (SEGURANÇA!)
 config.json
 .env
+*.env
 
 # Banco de dados (Arquivos que mudam toda hora)
 *.sqlite
+*.sqlite3
 *.db
+*.db-journal
 
 # Pastas temporárias do Python (Lixo de código)
 __pycache__/
 *.py[cod]
 *$py.class
+*.pyc
+*.pyo
+*.pyd
 
 # Ambiente Virtual
 venv/
 .venv/
+env/
+ENV/
+
+# Arquivos temporários e de sistema
+*.tmp
+*.temp
+*.log
+*.bak
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+
+# Arquivos de IDE
+.vscode/
+.idea/
+*.sublime-project
+*.sublime-workspace
+
+# Arquivos de backup e zip
+*.zip
+*.tar
+*.tar.gz
+*.rar
+Bot.zip
+Untitled*

@@ -19,14 +19,29 @@ class WarnCog(commands.Cog):
         self.db = db
         self.config = config
 
-    def _find_member_by_server_id(self, guild: discord.Guild, server_id: str) -> Optional[discord.Member]:
+    async def _find_member_by_server_id(self, guild: discord.Guild, server_id: str) -> Optional[discord.Member]:
+        """Busca membro por server_id usando indexação do banco de dados (O(1) em vez de O(N))."""
         server_id = server_id.strip()
+        
+        # Primeiro tenta buscar no banco de dados (busca otimizada)
+        discord_id = await self.db.get_member_by_server_id(guild.id, server_id)
+        if discord_id:
+            member = guild.get_member(discord_id)
+            if member:
+                return member
+        
+        # Fallback: busca manual se não encontrar no banco (para membros antigos)
         for member in guild.members:
             name = member.nick or member.name
             if "|" not in name:
                 continue
             left, right = name.split("|", 1)
             if right.strip() == server_id:
+                # Atualiza o banco para próxima busca ser mais rápida
+                # Busca o server_id do apelido
+                server_id_from_nick = right.strip()
+                if server_id_from_nick:
+                    await self.db.set_member_server_id(guild.id, member.id, server_id_from_nick)
                 return member
         return None
 
@@ -42,12 +57,12 @@ class WarnCog(commands.Cog):
             await ctx.reply("Use este comando em um servidor.")
             return
 
-        member = self._find_member_by_server_id(guild, server_id)
+        member = await self._find_member_by_server_id(guild, server_id)
         if not member:
-            await ctx.reply(f"Não encontrei membro com ID '{server_id}' no apelido.")
+            await ctx.reply(f"Não encontrei membro com ID '{server_id}' no servidor.")
             return
 
-        channels, roles, _ = _get_settings(self.db, self.config, guild.id)
+        channels, roles, _ = await _get_settings(self.db, guild.id)
         warn_channel_id = channels.get("warnings") or channels.get("channel_warnings")
         role_adv1_id = roles.get("adv1") or roles.get("role_adv1")
         role_adv2_id = roles.get("adv2") or roles.get("role_adv2")

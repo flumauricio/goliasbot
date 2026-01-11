@@ -19,6 +19,12 @@ class PurgeCog(commands.Cog):
     async def purge_channel(self, ctx: commands.Context):
         """Limpa todas as mensagens do canal onde for executado."""
         channel: discord.TextChannel = ctx.channel  # type: ignore[assignment]
+        
+        # Verifica se o bot tem permissão para gerenciar mensagens
+        if not channel.permissions_for(ctx.guild.me).manage_messages:  # type: ignore[union-attr]
+            await ctx.reply("❌ Eu não tenho permissão para gerenciar mensagens neste canal.", delete_after=10)
+            return
+        
         await ctx.reply("Limpando este canal...", delete_after=3)
         deleted_total = 0
         try:
@@ -28,11 +34,16 @@ class PurgeCog(commands.Cog):
                 if len(deleted) < 100:
                     break
         except discord.Forbidden:
-            await ctx.reply("Permissões insuficientes para excluir mensagens.", delete_after=5)
+            await ctx.reply("❌ Permissões insuficientes para excluir mensagens. Verifique se eu tenho permissão para gerenciar mensagens.", delete_after=10)
             return
         except discord.HTTPException as exc:
             LOGGER.warning("Falha ao purgar canal %s: %s", channel.id, exc)
-            await ctx.reply("Falha ao purgar. Tente novamente.", delete_after=5)
+            await ctx.reply(f"❌ Falha ao purgar canal: {str(exc)}. Tente novamente.", delete_after=10)
             return
-        await channel.send(f"Canal limpo. Mensagens removidas: {deleted_total}", delete_after=8)
+        except Exception as exc:
+            LOGGER.error("Erro inesperado ao purgar canal %s: %s", channel.id, exc)
+            await ctx.reply("❌ Erro inesperado ao limpar o canal. Verifique os logs para mais detalhes.", delete_after=10)
+            return
+        
+        await channel.send(f"✅ Canal limpo. Mensagens removidas: {deleted_total}", delete_after=8)
 

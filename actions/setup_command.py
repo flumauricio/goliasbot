@@ -29,38 +29,73 @@ class SetupCog(commands.Cog):
     @commands.command(name="setup")
     @commands.has_permissions(administrator=True)
     async def interactive_setup(self, ctx: commands.Context):
+        """Configura os canais e cargos do servidor através de um wizard interativo."""
         guild = ctx.guild
         if not guild:
             await ctx.reply("Use este comando em um servidor.")
             return
 
-        settings = self.db.get_settings(guild.id)
-        channels_cfg = self.config.guild_channels(guild.id)
-        roles_cfg = self.config.guild_roles(guild.id)
+        settings = await self.db.get_settings(guild.id)
 
-        def current(key: str, default_section: dict) -> str:
+        def current(key: str) -> str:
+            """Retorna o valor atual de uma configuração do banco de dados."""
             val = settings.get(key)
-            if val is None or str(val).strip() == "":
-                val = default_section.get(key.replace("channel_", ""))
             return str(val).strip() if val else ""
 
         needed_prompts = [
-            ("channel_registration_embed", "Informe o ID do canal para a embed de cadastro (!set):", channels_cfg),
-            ("channel_welcome", "Informe o ID do canal de boas-vindas:", channels_cfg),
-            ("channel_warnings", "Informe o ID do canal de advertências:", channels_cfg),
-            ("channel_leaves", "Informe o ID do canal de saídas:", channels_cfg),
-            ("channel_approval", "Informe o ID do canal de aprovação:", channels_cfg),
-            ("channel_records", "Informe o ID do canal de registros (aprovados):", channels_cfg),
-            ("role_set", "Informe o ID do cargo SET (atribuído ao entrar):", roles_cfg),
-            ("role_member", "Informe o ID do cargo Membro (após aprovação):", roles_cfg),
-            ("role_adv1", "Informe o ID do cargo ADV 1:", roles_cfg),
-            ("role_adv2", "Informe o ID do cargo ADV 2:", roles_cfg),
+            ("channel_registration_embed", "Informe o ID do canal para a embed de cadastro (!set):"),
+            ("channel_welcome", "Informe o ID do canal de boas-vindas:"),
+            ("channel_warnings", "Informe o ID do canal de advertências:"),
+            ("channel_leaves", "Informe o ID do canal de saídas:"),
+            ("channel_approval", "Informe o ID do canal de aprovação:"),
+            ("channel_records", "Informe o ID do canal de registros (aprovados):"),
+            ("role_set", "Informe o ID do cargo SET (atribuído ao entrar):"),
+            ("role_member", "Informe o ID do cargo Membro (após aprovação):"),
+            ("role_adv1", "Informe o ID do cargo ADV 1:"),
+            ("role_adv2", "Informe o ID do cargo ADV 2:"),
         ]
+
+        def validate_id(value: str, field_name: str) -> int:
+            """Valida se o valor é um ID numérico válido."""
+            value = value.strip()
+            if not value:
+                raise ValueError(f"ID não pode estar vazio para {field_name}")
+            if not value.isdigit():
+                raise ValueError(f"ID inválido para {field_name}: '{value}' não é um número. Por favor, forneça apenas números.")
+            return int(value)
+
+        async def validate_channel_id(channel_id: int, field_name: str) -> None:
+            """Valida se o ID do canal existe e o bot tem permissões necessárias."""
+            channel = guild.get_channel(channel_id)
+            if not channel:
+                raise ValueError(f"Canal com ID `{channel_id}` não encontrado no servidor ({field_name}).")
+            
+            if not isinstance(channel, discord.TextChannel):
+                raise ValueError(f"O ID `{channel_id}` não pertence a um canal de texto ({field_name}).")
+            
+            # Verifica permissões do bot
+            bot_member = guild.me
+            permissions = channel.permissions_for(bot_member)
+            missing_perms = []
+            
+            if not permissions.view_channel:
+                missing_perms.append("visualizar o canal")
+            if not permissions.send_messages:
+                missing_perms.append("enviar mensagens")
+            if not permissions.embed_links:
+                missing_perms.append("enviar embeds")
+            
+            if missing_perms:
+                raise ValueError(
+                    f"O bot não tem permissões suficientes no canal {channel.mention} ({field_name}): "
+                    f"{', '.join(missing_perms)}. "
+                    f"Verifique as permissões do bot neste canal."
+                )
 
         collected = {}
         try:
-            for key, prompt, section in needed_prompts:
-                existing = current(key, section)
+            for key, prompt in needed_prompts:
+                existing = current(key)
                 if existing:
                     collected[key] = existing
                     continue
@@ -70,34 +105,55 @@ class SetupCog(commands.Cog):
             await ctx.reply("Tempo esgotado. Rode !setup novamente.")
             return
 
-        self.db.upsert_settings(
+        # Valida todos os IDs antes de salvar
+        try:
+            validated = {}
+            
+            # Valida e verifica canais
+            channel_fields = [
+                ("channel_registration_embed", "canal de cadastro"),
+                ("channel_welcome", "canal de boas-vindas"),
+                ("channel_warnings", "canal de advertências"),
+                ("channel_leaves", "canal de saídas"),
+                ("channel_approval", "canal de aprovação"),
+                ("channel_records", "canal de registros"),
+            ]
+            
+            for key, field_name in channel_fields:
+                channel_id = validate_id(collected[key], field_name)
+                await validate_channel_id(channel_id, field_name)
+                validated[key] = channel_id
+            
+            # Valida cargos (apenas verifica se é número, não verifica existência)
+            role_fields = [
+                ("role_set", "cargo SET"),
+                ("role_member", "cargo Membro"),
+                ("role_adv1", "cargo ADV 1"),
+                ("role_adv2", "cargo ADV 2"),
+            ]
+            
+            for key, field_name in role_fields:
+                validated[key] = validate_id(collected[key], field_name)
+                
+        except ValueError as e:
+            await ctx.reply(f"❌ Erro de validação: {str(e)}\nPor favor, rode !setup novamente e forneça IDs válidos.")
+            return
+
+        await self.db.upsert_settings(
             guild.id,
-            channel_registration_embed=int(collected["channel_registration_embed"]),
-            channel_welcome=int(collected["channel_welcome"]),
-            channel_warnings=int(collected["channel_warnings"]),
-            channel_leaves=int(collected["channel_leaves"]),
-            channel_approval=int(collected["channel_approval"]),
-            channel_records=int(collected["channel_records"]),
-            role_set=int(collected["role_set"]),
-            role_member=int(collected["role_member"]),
-            role_adv1=int(collected["role_adv1"]),
-            role_adv2=int(collected["role_adv2"]),
+            channel_registration_embed=validated["channel_registration_embed"],
+            channel_welcome=validated["channel_welcome"],
+            channel_warnings=validated["channel_warnings"],
+            channel_leaves=validated["channel_leaves"],
+            channel_approval=validated["channel_approval"],
+            channel_records=validated["channel_records"],
+            role_set=validated["role_set"],
+            role_member=validated["role_member"],
+            role_adv1=validated["role_adv1"],
+            role_adv2=validated["role_adv2"],
         )
 
-        self.config.set_guild_value(
-            guild.id, "channels", "registration_embed", collected["channel_registration_embed"]
-        )
-        self.config.set_guild_value(guild.id, "channels", "welcome", collected["channel_welcome"])
-        self.config.set_guild_value(guild.id, "channels", "warnings", collected["channel_warnings"])
-        self.config.set_guild_value(guild.id, "channels", "leaves", collected["channel_leaves"])
-        self.config.set_guild_value(guild.id, "channels", "approval", collected["channel_approval"])
-        self.config.set_guild_value(guild.id, "channels", "records", collected["channel_records"])
-        self.config.set_guild_value(guild.id, "roles", "set", collected["role_set"])
-        self.config.set_guild_value(guild.id, "roles", "member", collected["role_member"])
-        self.config.set_guild_value(guild.id, "roles", "adv1", collected["role_adv1"])
-        self.config.set_guild_value(guild.id, "roles", "adv2", collected["role_adv2"])
-
-        await ctx.reply("Configurações salvas/atualizadas para este servidor (apenas campos faltantes foram solicitados).")
+        await ctx.reply("✅ Configurações salvas/atualizadas para este servidor no banco de dados (apenas campos faltantes foram solicitados).")
 
     @commands.command(name="setup_cargos")
     @commands.has_permissions(administrator=True)
@@ -130,7 +186,7 @@ class SetupCog(commands.Cog):
             return m.author == ctx.author and m.channel == ctx.channel
 
         for command in configurable:
-            current_roles = self.db.get_command_permissions(guild.id, command.name)
+            current_roles = await self.db.get_command_permissions(guild.id, command.name)
             texto_atual = "apenas administradores (padrão)"
             if current_roles:
                 if current_roles.strip() == "0":
@@ -167,7 +223,7 @@ class SetupCog(commands.Cog):
 
             # Apenas admin
             if content == "0":
-                self.db.set_command_permissions(guild.id, command.name, "0")
+                await self.db.set_command_permissions(guild.id, command.name, "0")
                 continue
 
             role_ids = set()
@@ -188,10 +244,10 @@ class SetupCog(commands.Cog):
                 )
                 continue
 
-            self.db.set_command_permissions(guild.id, command.name, ",".join(sorted(role_ids)))
+            await self.db.set_command_permissions(guild.id, command.name, ",".join(sorted(role_ids)))
 
         # Resumo final
-        perms = self.db.list_command_permissions(guild.id)
+        perms = await self.db.list_command_permissions(guild.id)
         if not perms:
             await ctx.reply("Nenhuma permissão de comando foi configurada.")
             return

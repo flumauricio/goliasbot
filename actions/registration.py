@@ -15,12 +15,56 @@ def _is_digits(value: str) -> bool:
     return value.isdigit()
 
 
-def _get_settings(db: Database, config: ConfigManager, guild_id: int):
-    stored = db.get_settings(guild_id)
-    cfg = config.get_guild(guild_id)
-    channels = {**cfg.get("channels", {}), **{k: v for k, v in stored.items() if k.startswith("channel_")}}
-    roles = {**cfg.get("roles", {}), **{k: v for k, v in stored.items() if k.startswith("role_")}}
-    messages = {**cfg.get("messages", {}), **{"set_embed": stored.get("message_set_embed")}}
+async def _get_settings(db: Database, guild_id: int):
+    """Obtém configurações do servidor apenas do banco de dados (fonte única de verdade).
+    
+    Retorna: (channels_dict, roles_dict, messages_dict)
+    """
+    stored = await db.get_settings(guild_id)
+    
+    # Converte as configurações do banco para o formato esperado
+    channels = {}
+    roles = {}
+    messages = {}
+    
+    # Canais
+    if stored.get("channel_registration_embed"):
+        channels["registration_embed"] = stored["channel_registration_embed"]
+        channels["channel_registration_embed"] = stored["channel_registration_embed"]
+    if stored.get("channel_welcome"):
+        channels["welcome"] = stored["channel_welcome"]
+        channels["channel_welcome"] = stored["channel_welcome"]
+    if stored.get("channel_warnings"):
+        channels["warnings"] = stored["channel_warnings"]
+        channels["channel_warnings"] = stored["channel_warnings"]
+    if stored.get("channel_leaves"):
+        channels["leaves"] = stored["channel_leaves"]
+        channels["channel_leaves"] = stored["channel_leaves"]
+    if stored.get("channel_approval"):
+        channels["approval"] = stored["channel_approval"]
+        channels["channel_approval"] = stored["channel_approval"]
+    if stored.get("channel_records"):
+        channels["records"] = stored["channel_records"]
+        channels["channel_records"] = stored["channel_records"]
+    
+    # Cargos
+    if stored.get("role_set"):
+        roles["set"] = stored["role_set"]
+        roles["role_set"] = stored["role_set"]
+    if stored.get("role_member"):
+        roles["member"] = stored["role_member"]
+        roles["role_member"] = stored["role_member"]
+    if stored.get("role_adv1"):
+        roles["adv1"] = stored["role_adv1"]
+        roles["role_adv1"] = stored["role_adv1"]
+    if stored.get("role_adv2"):
+        roles["adv2"] = stored["role_adv2"]
+        roles["role_adv2"] = stored["role_adv2"]
+    
+    # Mensagens
+    if stored.get("message_set_embed"):
+        messages["set_embed"] = stored["message_set_embed"]
+    
     return channels, roles, messages
 
 
@@ -56,7 +100,7 @@ class RegistrationModal(discord.ui.Modal, title="Cadastro de Membro"):
             )
             return
 
-        channels, _, _ = _get_settings(self.db, self.config, guild.id)
+        channels, _, _ = await _get_settings(self.db, guild.id)
         approval_id = channels.get("approval") or channels.get("channel_approval")
         if not approval_id:
             await interaction.response.send_message(
@@ -91,7 +135,7 @@ class RegistrationModal(discord.ui.Modal, title="Cadastro de Membro"):
         view = ApprovalView(self.db, self.config, interaction.user.id)
         approval_message = await approval_channel.send(embed=embed, view=view)
 
-        registration_id = self.db.create_registration(
+        registration_id = await self.db.create_registration(
             guild_id=guild.id,
             user_id=interaction.user.id,
             user_name=self.nome.value,
@@ -220,14 +264,14 @@ class ApprovalView(discord.ui.View):
             )
             return
 
-        data = self.db.get_registration(self.registration_id)
+        data = await self.db.get_registration(self.registration_id)
         if not data:
             await interaction.response.send_message(
                 "Registro não encontrado ou já processado.", ephemeral=True
             )
             return
 
-        channels, roles, _ = _get_settings(self.db, self.config, guild.id)
+        channels, roles, _ = await _get_settings(self.db, guild.id)
 
         member = guild.get_member(int(data["user_id"]))
         if not member:
@@ -242,12 +286,14 @@ class ApprovalView(discord.ui.View):
         new_nick = f"{data['user_name']} | {data['server_id']}"
         try:
             await member.edit(nick=new_nick, reason="Cadastro aprovado - atualização de apelido")
+            # Armazena mapeamento server_id -> discord_id para busca otimizada
+            await self.db.set_member_server_id(guild.id, member.id, data['server_id'])
         except discord.Forbidden:
             LOGGER.warning("Não consegui alterar apelido de %s em %s", member.id, guild.id)
 
         await self._send_record(guild, channels, data, approver=interaction.user)
 
-        self.db.update_registration_status(self.registration_id, "approved")
+        await self.db.update_registration_status(self.registration_id, "approved")
 
         await interaction.response.send_message(
             f"Cadastro aprovado para {member.mention}.", ephemeral=True
@@ -276,7 +322,7 @@ class ApprovalView(discord.ui.View):
                 "Registro não encontrado.", ephemeral=True
             )
             return
-        data = self.db.get_registration(self.registration_id)
+        data = await self.db.get_registration(self.registration_id)
         if not data:
             await interaction.response.send_message(
                 "Registro não encontrado ou já processado.", ephemeral=True
@@ -285,7 +331,7 @@ class ApprovalView(discord.ui.View):
         guild = interaction.guild
         member = guild.get_member(int(data["user_id"])) if guild else None
 
-        self.db.update_registration_status(self.registration_id, "rejected")
+        await self.db.update_registration_status(self.registration_id, "rejected")
         await interaction.response.send_message("Cadastro recusado.", ephemeral=True)
         await interaction.message.edit(content="❌ Recusado", view=None)
 
@@ -304,7 +350,7 @@ class RegistrationCog(commands.Cog):
 
     @commands.Cog.listener()
     async def on_member_join(self, member: discord.Member):
-        channels, roles, _ = _get_settings(self.db, self.config, member.guild.id)
+        channels, roles, _ = await _get_settings(self.db, member.guild.id)
         role_id = roles.get("set") or roles.get("role_set")
         role_member_id = roles.get("member") or roles.get("role_member")
         if not role_id:
@@ -350,7 +396,14 @@ class RegistrationCog(commands.Cog):
     @commands.Cog.listener()
     async def on_member_remove(self, member: discord.Member):
         guild = member.guild
-        channels, _, _ = _get_settings(self.db, self.config, guild.id)
+        channels, _, _ = await _get_settings(self.db, guild.id)
+        
+        # Remove mapeamento server_id do banco quando membro sai
+        try:
+            await self.db.remove_member_server_id(guild.id, member.id)
+        except Exception as exc:
+            LOGGER.warning("Erro ao remover mapeamento server_id de %s: %s", member.id, exc)
+        
         leave_id = channels.get("leaves") or channels.get("channel_leaves")
         if not leave_id:
             return

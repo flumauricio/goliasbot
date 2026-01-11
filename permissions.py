@@ -31,7 +31,7 @@ async def check_command_permission(ctx: commands.Context, command_name: str) -> 
         return True
 
     db: Database = ctx.bot.db  # type: ignore[attr-defined]
-    role_ids = db.get_command_permissions(guild.id, command_name)
+    role_ids = await db.get_command_permissions(guild.id, command_name)
 
     # Sem configuração explícita -> apenas admins (já checado acima)
     if role_ids is None:
