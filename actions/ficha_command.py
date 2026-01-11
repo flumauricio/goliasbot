@@ -232,6 +232,34 @@ class FichaCog(commands.Cog):
             inline=True
         )
         
+        # ===== HISTÓRICO DE AÇÕES =====
+        try:
+            stats = await self.db.get_user_stats(guild.id, member.id)
+            if stats:
+                participations = stats.get("participations", 0)
+                total_earned = stats.get("total_earned", 0.0)
+                embed.add_field(
+                    name="📊 Histórico de Ações",
+                    value=(
+                        f"**Participações:** {participations}\n"
+                        f"**Total Ganho:** R$ {total_earned:,.2f}"
+                    ),
+                    inline=True
+                )
+            else:
+                embed.add_field(
+                    name="📊 Histórico de Ações",
+                    value="Nenhuma participação registrada",
+                    inline=True
+                )
+        except Exception as exc:
+            LOGGER.warning("Erro ao buscar estatísticas de ações: %s", exc)
+            embed.add_field(
+                name="📊 Histórico de Ações",
+                value="Erro ao carregar dados",
+                inline=True
+            )
+        
         # ===== PONTOS (FUTURO) =====
         # Estrutura preparada para quando implementarmos sistema de pontos
         # embed.add_field(

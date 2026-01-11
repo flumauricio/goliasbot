@@ -16,6 +16,11 @@ from actions import (
     FichaCog,
     TicketCog,
     TicketOpenView,
+    TicketControlView,
+    ActionConfigCog,
+    ActionCog,
+    ActionView,
+    InviteCog,
 )
 # IMPORTAR O NOVO COG
 from actions.server_manage import ServerManageCog
@@ -52,14 +57,19 @@ async def build_bot() -> commands.Bot:
             await self.add_cog(RegistrationCog(self, db, config))
             await self.add_cog(FichaCog(self, db))
             await self.add_cog(TicketCog(self, db))
+            await self.add_cog(ActionConfigCog(self, db))
+            await self.add_cog(ActionCog(self, db))
             
             # ADICIONAR O NOVO COG AQUI
             await self.add_cog(ServerManageCog(self))
             await self.add_cog(HelpCog(self))
+            await self.add_cog(InviteCog(self))
             
             self.add_view(RegistrationView(db, config))
             self.add_view(TicketOpenView(db))
+            self.add_view(TicketControlView(db))
             await restore_pending_views(self, db, config)
+            await restore_ticket_views(self, db)
 
     bot = RegistrationBot(command_prefix="!", intents=intents)
     bot.config_manager = config
@@ -153,6 +163,7 @@ async def build_bot() -> commands.Bot:
 
 # --- Restante do arquivo (restore_pending_views e main) permanece igual ---
 async def restore_pending_views(bot: commands.Bot, db: Database, config: ConfigManager):
+    """Restaura views de registros pendentes."""
     pending = await db.list_pending_registrations()
     for reg in pending:
         guild = bot.get_guild(int(reg["guild_id"]))
@@ -174,6 +185,107 @@ async def restore_pending_views(bot: commands.Bot, db: Database, config: ConfigM
             bot.add_view(view, message_id=int(message_id))
         except Exception as exc:
             LOGGER.warning("Falha ao restaurar view para registro %s: %s", reg["id"], exc)
+
+async def restore_action_views(bot: commands.Bot, db: Database):
+    """Restaura views de ações ativas para garantir persistência."""
+    try:
+        # Busca todas as ações com status 'open' ou 'closed'
+        for guild in bot.guilds:
+            actions = await db.list_active_actions(guild.id, status="open")
+            actions += await db.list_active_actions(guild.id, status="closed")
+            
+            for action in actions:
+                message_id = action.get("message_id")
+                if not message_id or not str(message_id).isdigit():
+                    continue
+                
+                channel_id = action.get("channel_id")
+                if not channel_id or not str(channel_id).isdigit():
+                    continue
+                
+                try:
+                    channel = guild.get_channel(int(channel_id))
+                    if not channel:
+                        channel = await guild.fetch_channel(int(channel_id))
+                    
+                    if channel:
+                        try:
+                            message = await channel.fetch_message(int(message_id))
+                            view = ActionView(bot, db, action["id"])
+                            bot.add_view(view, message_id=int(message_id))
+                        except discord.NotFound:
+                            LOGGER.warning("Mensagem de ação %s não encontrada", action["id"])
+                        except Exception as exc:
+                            LOGGER.warning("Erro ao restaurar view de ação %s: %s", action["id"], exc)
+                except Exception as exc:
+                    LOGGER.warning("Erro ao buscar canal para ação %s: %s", action["id"], exc)
+    except Exception as exc:
+        LOGGER.error("Erro ao restaurar views de ações: %s", exc, exc_info=True)
+
+async def restore_ticket_views(bot: commands.Bot, db: Database):
+    """Restaura views de tickets abertos para garantir persistência."""
+    try:
+        open_tickets = await db.list_open_tickets()
+        restored_count = 0
+        
+        for ticket in open_tickets:
+            try:
+                # Converte guild_id com validação
+                try:
+                    guild_id = int(ticket["guild_id"]) if ticket.get("guild_id") and str(ticket["guild_id"]).isdigit() else None
+                except (ValueError, TypeError):
+                    guild_id = None
+                
+                if not guild_id:
+                    continue
+                
+                guild = bot.get_guild(guild_id)
+                if not guild:
+                    continue
+                
+                # Converte channel_id com validação e fallback
+                try:
+                    channel_id = int(ticket["channel_id"]) if ticket.get("channel_id") and str(ticket["channel_id"]).isdigit() else None
+                except (ValueError, TypeError):
+                    channel_id = None
+                
+                if not channel_id:
+                    continue
+                
+                channel = guild.get_channel(channel_id)
+                if not channel or not isinstance(channel, discord.TextChannel):
+                    try:
+                        fetched = await guild.fetch_channel(channel_id)
+                        if isinstance(fetched, discord.TextChannel):
+                            channel = fetched
+                        else:
+                            continue
+                    except (discord.NotFound, discord.HTTPException):
+                        continue
+                
+                # Busca a mensagem com o embed do ticket
+                ticket_id = ticket["id"]
+                author_id = int(ticket["user_id"])
+                # Apenas tickets abertos são restaurados (list_open_tickets já filtra)
+                is_closed = False
+                
+                # Procura a mensagem com o embed do ticket
+                async for msg in channel.history(limit=100):
+                    if msg.embeds and msg.embeds[0].footer:
+                        footer_text = str(msg.embeds[0].footer.text)
+                        if f"Ticket #{ticket_id}" in footer_text:
+                            # Restaura a view
+                            view = TicketControlView(db, ticket_id, author_id, is_closed)
+                            bot.add_view(view, message_id=msg.id)
+                            restored_count += 1
+                            break
+            except Exception as exc:
+                LOGGER.warning("Falha ao restaurar view para ticket %s: %s", ticket.get("id"), exc)
+        
+        if restored_count > 0:
+            LOGGER.info("Restauradas %d views de tickets abertos", restored_count)
+    except Exception as exc:
+        LOGGER.error("Erro ao restaurar views de tickets: %s", exc, exc_info=exc)
 
 async def main():
     bot = await build_bot()

@@ -5,7 +5,10 @@ from .warn_command import WarnCog
 from .registration import RegistrationCog, RegistrationView, ApprovalView
 from .help_command import HelpCog
 from .ficha_command import FichaCog
-from .ticket_command import TicketCog, TicketOpenView
+from .ticket_command import TicketCog, TicketOpenView, TicketControlView
+from .action_config import ActionConfigCog
+from .action_system import ActionCog, ActionView
+from .invite_command import InviteCog
 
 __all__ = [
     "SetupCog",
@@ -19,5 +22,10 @@ __all__ = [
     "FichaCog",
     "TicketCog",
     "TicketOpenView",
+    "TicketControlView",
+    "ActionConfigCog",
+    "ActionCog",
+    "ActionView",
+    "InviteCog",
 ]
 

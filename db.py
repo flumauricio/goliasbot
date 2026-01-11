@@ -29,41 +29,41 @@ class Database:
 
         async with self._conn.cursor() as cur:
             await cur.execute(
-                """
-                CREATE TABLE IF NOT EXISTS registrations (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    guild_id TEXT NOT NULL,
-                    user_id TEXT NOT NULL,
-                    user_name TEXT NOT NULL,
-                    server_id TEXT NOT NULL,
-                    recruiter_id TEXT NOT NULL,
-                    status TEXT NOT NULL,
-                    approval_message_id TEXT,
-                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-                )
-                """
+            """
+            CREATE TABLE IF NOT EXISTS registrations (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                guild_id TEXT NOT NULL,
+                user_id TEXT NOT NULL,
+                user_name TEXT NOT NULL,
+                server_id TEXT NOT NULL,
+                recruiter_id TEXT NOT NULL,
+                status TEXT NOT NULL,
+                approval_message_id TEXT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
+            """
+        )
             await cur.execute(
-                """
-                CREATE TABLE IF NOT EXISTS settings (
-                    guild_id TEXT PRIMARY KEY,
-                    channel_registration_embed TEXT,
-                    channel_welcome TEXT,
-                    channel_warnings TEXT,
-                    channel_leaves TEXT,
-                    channel_approval TEXT,
-                    channel_records TEXT,
-                    role_set TEXT,
-                    role_member TEXT,
-                    role_adv1 TEXT,
-                    role_adv2 TEXT,
-                    message_set_embed TEXT,
-                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-                )
-                """
+            """
+            CREATE TABLE IF NOT EXISTS settings (
+                guild_id TEXT PRIMARY KEY,
+                channel_registration_embed TEXT,
+                channel_welcome TEXT,
+                channel_warnings TEXT,
+                channel_leaves TEXT,
+                channel_approval TEXT,
+                channel_records TEXT,
+                role_set TEXT,
+                role_member TEXT,
+                role_adv1 TEXT,
+                role_adv2 TEXT,
+                message_set_embed TEXT,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
-            # Migrações leves para colunas que podem faltar
+            """
+        )
+        # Migrações leves para colunas que podem faltar
             await cur.execute("PRAGMA table_info(settings)")
             rows = await cur.fetchall()
             cols = [row[1] for row in rows]
@@ -89,7 +89,7 @@ class Database:
                 )
                 """
             )
-            
+
             # Tabela para mapear server_id -> discord_id (otimização para busca de membros)
             await cur.execute(
                 """
@@ -132,6 +132,8 @@ class Database:
                 await cur.execute("ALTER TABLE ticket_settings ADD COLUMN ticket_channel_id TEXT")
             if "max_tickets_per_user" not in cols:
                 await cur.execute("ALTER TABLE ticket_settings ADD COLUMN max_tickets_per_user INTEGER DEFAULT 1")
+            if "global_staff_roles" not in cols:
+                await cur.execute("ALTER TABLE ticket_settings ADD COLUMN global_staff_roles TEXT")
             
             await cur.execute(
                 """
@@ -181,6 +183,110 @@ class Database:
                 ON tickets(guild_id, channel_id)
                 """
             )
+            
+            # Tabelas do sistema de ações FiveM
+            await cur.execute(
+                """
+                CREATE TABLE IF NOT EXISTS action_types (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    guild_id TEXT NOT NULL,
+                    name TEXT NOT NULL,
+                    min_players INTEGER NOT NULL,
+                    max_players INTEGER NOT NULL,
+                    total_value REAL NOT NULL,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+                """
+            )
+            
+            await cur.execute(
+                """
+                CREATE TABLE IF NOT EXISTS active_actions (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    guild_id TEXT NOT NULL,
+                    type_id INTEGER NOT NULL,
+                    creator_id TEXT NOT NULL,
+                    status TEXT NOT NULL DEFAULT 'open',
+                    message_id TEXT,
+                    channel_id TEXT,
+                    registrations_open INTEGER NOT NULL DEFAULT 0,
+                    final_value REAL,
+                    result TEXT,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    closed_at TIMESTAMP,
+                    FOREIGN KEY (type_id) REFERENCES action_types(id) ON DELETE CASCADE
+                )
+                """
+            )
+            
+            # Migração: adiciona coluna registrations_open se não existir
+            try:
+                await cur.execute("ALTER TABLE active_actions ADD COLUMN registrations_open INTEGER NOT NULL DEFAULT 0")
+            except aiosqlite.OperationalError:
+                pass  # Coluna já existe
+            
+            await cur.execute(
+                """
+                CREATE TABLE IF NOT EXISTS action_participants (
+                    action_id INTEGER NOT NULL,
+                    user_id TEXT NOT NULL,
+                    joined_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    PRIMARY KEY (action_id, user_id),
+                    FOREIGN KEY (action_id) REFERENCES active_actions(id) ON DELETE CASCADE
+                )
+                """
+            )
+            
+            await cur.execute(
+                """
+                CREATE TABLE IF NOT EXISTS action_removed_participants (
+                    action_id INTEGER NOT NULL,
+                    user_id TEXT NOT NULL,
+                    removed_by TEXT NOT NULL,
+                    removed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    PRIMARY KEY (action_id, user_id),
+                    FOREIGN KEY (action_id) REFERENCES active_actions(id) ON DELETE CASCADE
+                )
+                """
+            )
+            
+            await cur.execute(
+                """
+                CREATE TABLE IF NOT EXISTS action_stats (
+                    guild_id TEXT NOT NULL,
+                    user_id TEXT NOT NULL,
+                    participations INTEGER DEFAULT 0,
+                    total_earned REAL DEFAULT 0.0,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    PRIMARY KEY (guild_id, user_id)
+                )
+                """
+            )
+            
+            await cur.execute(
+                """
+                CREATE TABLE IF NOT EXISTS action_settings (
+                    guild_id TEXT PRIMARY KEY,
+                    responsible_role_id TEXT,
+                    action_channel_id TEXT,
+                    ranking_channel_id TEXT,
+                    ranking_message_id TEXT,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+                """
+            )
+            
+            # Tabela para múltiplos cargos responsáveis
+            await cur.execute(
+                """
+                CREATE TABLE IF NOT EXISTS action_responsible_roles (
+                    guild_id TEXT NOT NULL,
+                    role_id TEXT NOT NULL,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    PRIMARY KEY (guild_id, role_id)
+                )
+                """
+            )
 
         await self._conn.commit()
         LOGGER.info("Migrações aplicadas em %s", self.path)
@@ -222,49 +328,49 @@ class Database:
 
         async with self._conn.cursor() as cur:
             await cur.execute(
-                """
-                INSERT INTO settings (
-                    guild_id,
-                    channel_registration_embed,
-                    channel_welcome,
-                    channel_warnings,
-                    channel_leaves,
-                    channel_approval,
-                    channel_records,
-                    role_set,
-                    role_member,
-                    role_adv1,
-                    role_adv2,
-                    message_set_embed
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                ON CONFLICT(guild_id) DO UPDATE SET
-                    channel_registration_embed=excluded.channel_registration_embed,
-                    channel_welcome=excluded.channel_welcome,
-                    channel_warnings=excluded.channel_warnings,
-                    channel_approval=excluded.channel_approval,
-                    channel_records=excluded.channel_records,
-                    role_set=excluded.role_set,
-                    role_member=excluded.role_member,
-                    role_adv1=excluded.role_adv1,
-                    role_adv2=excluded.role_adv2,
-                    message_set_embed=excluded.message_set_embed,
-                    updated_at=CURRENT_TIMESTAMP
-                """,
-                (
-                    str(guild_id),
-                    merged.get("channel_registration_embed"),
-                    merged.get("channel_welcome"),
-                    merged.get("channel_warnings"),
-                    merged.get("channel_leaves"),
-                    merged.get("channel_approval"),
-                    merged.get("channel_records"),
-                    merged.get("role_set"),
-                    merged.get("role_member"),
-                    merged.get("role_adv1"),
-                    merged.get("role_adv2"),
-                    merged.get("message_set_embed"),
-                ),
-            )
+            """
+            INSERT INTO settings (
+                guild_id,
+                channel_registration_embed,
+                channel_welcome,
+                channel_warnings,
+                channel_leaves,
+                channel_approval,
+                channel_records,
+                role_set,
+                role_member,
+                role_adv1,
+                role_adv2,
+                message_set_embed
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(guild_id) DO UPDATE SET
+                channel_registration_embed=excluded.channel_registration_embed,
+                channel_welcome=excluded.channel_welcome,
+                channel_warnings=excluded.channel_warnings,
+                channel_approval=excluded.channel_approval,
+                channel_records=excluded.channel_records,
+                role_set=excluded.role_set,
+                role_member=excluded.role_member,
+                role_adv1=excluded.role_adv1,
+                role_adv2=excluded.role_adv2,
+                message_set_embed=excluded.message_set_embed,
+                updated_at=CURRENT_TIMESTAMP
+            """,
+            (
+                str(guild_id),
+                merged.get("channel_registration_embed"),
+                merged.get("channel_welcome"),
+                merged.get("channel_warnings"),
+                merged.get("channel_leaves"),
+                merged.get("channel_approval"),
+                merged.get("channel_records"),
+                merged.get("role_set"),
+                merged.get("role_member"),
+                merged.get("role_adv1"),
+                merged.get("role_adv2"),
+                merged.get("message_set_embed"),
+            ),
+        )
         await self._conn.commit()
 
     async def get_settings(self, guild_id: int) -> Dict[str, Any]:
@@ -274,9 +380,9 @@ class Database:
         async with self._conn.cursor() as cur:
             await cur.execute("SELECT * FROM settings WHERE guild_id = ?", (str(guild_id),))
             row = await cur.fetchone()
-            if not row:
-                return {}
-            return dict(row)
+        if not row:
+            return {}
+        return dict(row)
 
     async def create_registration(
         self,
@@ -293,22 +399,22 @@ class Database:
 
         async with self._conn.cursor() as cur:
             await cur.execute(
-                """
-                INSERT INTO registrations (
-                    guild_id, user_id, user_name, server_id, recruiter_id, status, approval_message_id
-                ) VALUES (?, ?, ?, ?, ?, 'pending', ?)
-                """,
-                (
-                    str(guild_id),
-                    str(user_id),
-                    user_name,
-                    server_id,
-                    recruiter_id,
-                    str(approval_message_id) if approval_message_id else None,
-                ),
-            )
+            """
+            INSERT INTO registrations (
+                guild_id, user_id, user_name, server_id, recruiter_id, status, approval_message_id
+            ) VALUES (?, ?, ?, ?, ?, 'pending', ?)
+            """,
+            (
+                str(guild_id),
+                str(user_id),
+                user_name,
+                server_id,
+                recruiter_id,
+                str(approval_message_id) if approval_message_id else None,
+            ),
+        )
             await self._conn.commit()
-            return int(cur.lastrowid)
+        return int(cur.lastrowid)
 
     async def update_registration_status(
         self,
@@ -322,13 +428,13 @@ class Database:
 
         async with self._conn.cursor() as cur:
             await cur.execute(
-                """
-                UPDATE registrations
-                SET status = ?, approval_message_id = COALESCE(?, approval_message_id), updated_at = CURRENT_TIMESTAMP
-                WHERE id = ?
-                """,
-                (status, str(approval_message_id) if approval_message_id else None, registration_id),
-            )
+            """
+            UPDATE registrations
+            SET status = ?, approval_message_id = COALESCE(?, approval_message_id), updated_at = CURRENT_TIMESTAMP
+            WHERE id = ?
+            """,
+            (status, str(approval_message_id) if approval_message_id else None, registration_id),
+        )
         await self._conn.commit()
 
     async def get_registration_by_message(self, approval_message_id: int) -> Optional[Dict[str, Any]]:
@@ -337,10 +443,10 @@ class Database:
 
         async with self._conn.cursor() as cur:
             await cur.execute(
-                "SELECT * FROM registrations WHERE approval_message_id = ?", (str(approval_message_id),)
-            )
+            "SELECT * FROM registrations WHERE approval_message_id = ?", (str(approval_message_id),)
+        )
             row = await cur.fetchone()
-            return dict(row) if row else None
+        return dict(row) if row else None
 
     async def get_registration(self, registration_id: int) -> Optional[Dict[str, Any]]:
         if not self._conn:
@@ -349,7 +455,7 @@ class Database:
         async with self._conn.cursor() as cur:
             await cur.execute("SELECT * FROM registrations WHERE id = ?", (registration_id,))
             row = await cur.fetchone()
-            return dict(row) if row else None
+        return dict(row) if row else None
 
     async def get_user_registration(
         self, guild_id: int, user_id: int, status: Optional[str] = "approved"
@@ -379,7 +485,7 @@ class Database:
                     (str(guild_id), str(user_id)),
                 )
             row = await cur.fetchone()
-            return dict(row) if row else None
+        return dict(row) if row else None
 
     async def list_pending_registrations(self) -> Tuple[Dict[str, Any], ...]:
         if not self._conn:
@@ -388,7 +494,7 @@ class Database:
         async with self._conn.cursor() as cur:
             await cur.execute("SELECT * FROM registrations WHERE status = 'pending'")
             rows = await cur.fetchall()
-            return tuple(dict(row) for row in rows)
+        return tuple(dict(row) for row in rows)
 
     # ===== Permissões de comandos =====
 
@@ -410,14 +516,14 @@ class Database:
 
         async with self._conn.cursor() as cur:
             await cur.execute(
-                """
-                INSERT INTO command_permissions (guild_id, command_name, role_ids)
-                VALUES (?, ?, ?)
-                ON CONFLICT(guild_id, command_name) DO UPDATE SET
-                    role_ids = excluded.role_ids
-                """,
-                (str(guild_id), command_name, role_ids),
-            )
+            """
+            INSERT INTO command_permissions (guild_id, command_name, role_ids)
+            VALUES (?, ?, ?)
+            ON CONFLICT(guild_id, command_name) DO UPDATE SET
+                role_ids = excluded.role_ids
+            """,
+            (str(guild_id), command_name, role_ids),
+        )
         await self._conn.commit()
 
     async def get_command_permissions(self, guild_id: int, command_name: str) -> Optional[str]:
@@ -426,13 +532,13 @@ class Database:
 
         async with self._conn.cursor() as cur:
             await cur.execute(
-                "SELECT role_ids FROM command_permissions WHERE guild_id = ? AND command_name = ?",
-                (str(guild_id), command_name),
-            )
+            "SELECT role_ids FROM command_permissions WHERE guild_id = ? AND command_name = ?",
+            (str(guild_id), command_name),
+        )
             row = await cur.fetchone()
-            if not row:
-                return None
-            return row["role_ids"]
+        if not row:
+            return None
+        return row["role_ids"]
 
     async def list_command_permissions(self, guild_id: int) -> Tuple[Dict[str, Any], ...]:
         if not self._conn:
@@ -440,11 +546,11 @@ class Database:
 
         async with self._conn.cursor() as cur:
             await cur.execute(
-                "SELECT command_name, role_ids FROM command_permissions WHERE guild_id = ?",
-                (str(guild_id),),
-            )
+            "SELECT command_name, role_ids FROM command_permissions WHERE guild_id = ?",
+            (str(guild_id),),
+        )
             rows = await cur.fetchall()
-            return tuple(dict(row) for row in rows)
+        return tuple(dict(row) for row in rows)
 
     # ===== Mapeamento server_id -> discord_id (otimização) =====
 
@@ -511,6 +617,7 @@ class Database:
         panel_message_id: Optional[int] = None,
         ticket_channel_id: Optional[int] = None,
         max_tickets_per_user: Optional[int] = None,
+        global_staff_roles: Optional[str] = None,
     ) -> None:
         """Atualiza ou cria configurações de tickets."""
         if not self._conn:
@@ -529,30 +636,64 @@ class Database:
             merged["ticket_channel_id"] = str(ticket_channel_id)
         if max_tickets_per_user is not None:
             merged["max_tickets_per_user"] = max_tickets_per_user
+        if global_staff_roles is not None:
+            merged["global_staff_roles"] = global_staff_roles
         
         async with self._conn.cursor() as cur:
-            await cur.execute(
-                """
-                INSERT INTO ticket_settings (guild_id, category_id, log_channel_id, panel_message_id, ticket_channel_id, max_tickets_per_user)
-                VALUES (?, ?, ?, ?, ?, ?)
-                ON CONFLICT(guild_id) DO UPDATE SET
-                    category_id=COALESCE(excluded.category_id, category_id),
-                    log_channel_id=COALESCE(excluded.log_channel_id, log_channel_id),
-                    panel_message_id=COALESCE(excluded.panel_message_id, panel_message_id),
-                    ticket_channel_id=COALESCE(excluded.ticket_channel_id, ticket_channel_id),
-                    max_tickets_per_user=COALESCE(excluded.max_tickets_per_user, max_tickets_per_user),
-                    updated_at=CURRENT_TIMESTAMP
-                """,
-                (
-                    str(guild_id),
-                    merged.get("category_id"),
-                    merged.get("log_channel_id"),
-                    merged.get("panel_message_id"),
-                    merged.get("ticket_channel_id"),
-                    merged.get("max_tickets_per_user", 1),
-                ),
-            )
-        await self._conn.commit()
+            # Verifica se a coluna global_staff_roles existe
+            await cur.execute("PRAGMA table_info(ticket_settings)")
+            rows = await cur.fetchall()
+            cols = [row[1] for row in rows]
+            has_global_roles = "global_staff_roles" in cols
+            
+            if has_global_roles:
+                await cur.execute(
+                    """
+                    INSERT INTO ticket_settings (guild_id, category_id, log_channel_id, panel_message_id, ticket_channel_id, max_tickets_per_user, global_staff_roles)
+                    VALUES (?, ?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(guild_id) DO UPDATE SET
+                        category_id=COALESCE(excluded.category_id, category_id),
+                        log_channel_id=COALESCE(excluded.log_channel_id, log_channel_id),
+                        panel_message_id=COALESCE(excluded.panel_message_id, panel_message_id),
+                        ticket_channel_id=COALESCE(excluded.ticket_channel_id, ticket_channel_id),
+                        max_tickets_per_user=COALESCE(excluded.max_tickets_per_user, max_tickets_per_user),
+                        global_staff_roles=COALESCE(excluded.global_staff_roles, global_staff_roles),
+                        updated_at=CURRENT_TIMESTAMP
+                    """,
+                    (
+                        str(guild_id),
+                        merged.get("category_id"),
+                        merged.get("log_channel_id"),
+                        merged.get("panel_message_id"),
+                        merged.get("ticket_channel_id"),
+                        merged.get("max_tickets_per_user", 1),
+                        merged.get("global_staff_roles"),
+                    ),
+                )
+                await self._conn.commit()
+            else:
+                await cur.execute(
+                    """
+                    INSERT INTO ticket_settings (guild_id, category_id, log_channel_id, panel_message_id, ticket_channel_id, max_tickets_per_user)
+                    VALUES (?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(guild_id) DO UPDATE SET
+                        category_id=COALESCE(excluded.category_id, category_id),
+                        log_channel_id=COALESCE(excluded.log_channel_id, log_channel_id),
+                        panel_message_id=COALESCE(excluded.panel_message_id, panel_message_id),
+                        ticket_channel_id=COALESCE(excluded.ticket_channel_id, ticket_channel_id),
+                        max_tickets_per_user=COALESCE(excluded.max_tickets_per_user, max_tickets_per_user),
+                        updated_at=CURRENT_TIMESTAMP
+                    """,
+                    (
+                        str(guild_id),
+                        merged.get("category_id"),
+                        merged.get("log_channel_id"),
+                        merged.get("panel_message_id"),
+                        merged.get("ticket_channel_id"),
+                        merged.get("max_tickets_per_user", 1),
+                    ),
+                )
+                await self._conn.commit()
     
     async def create_ticket_topic(
         self,
@@ -565,6 +706,22 @@ class Database:
         """Cria um novo tópico de ticket. Retorna o ID do tópico."""
         if not self._conn:
             raise RuntimeError("Database não inicializado. Chame initialize() primeiro.")
+        
+        # Validação robusta: name é obrigatório e não pode ser vazio
+        if name is None:
+            raise ValueError("O nome do tópico não pode ser None.")
+        
+        if not isinstance(name, str):
+            raise ValueError(f"O nome do tópico deve ser uma string, recebido: {type(name)}")
+        
+        name = name.strip()
+        if not name:
+            raise ValueError("O nome do tópico é obrigatório e não pode estar vazio.")
+        
+        # Sanitização básica
+        description = (description.strip() if description and isinstance(description, str) else "") or ""
+        emoji = (emoji.strip() if emoji and isinstance(emoji, str) else "") or "🎫"
+        button_color = (button_color.strip() if button_color and isinstance(button_color, str) else "") or "primary"
         
         async with self._conn.cursor() as cur:
             await cur.execute(
@@ -602,6 +759,52 @@ class Database:
             row = await cur.fetchone()
             return dict(row) if row else None
     
+    async def update_ticket_topic(
+        self,
+        topic_id: int,
+        *,
+        name: Optional[str] = None,
+        description: Optional[str] = None,
+        emoji: Optional[str] = None,
+        button_color: Optional[str] = None,
+    ) -> None:
+        """Atualiza um tópico de ticket existente."""
+        if not self._conn:
+            raise RuntimeError("Database não inicializado. Chame initialize() primeiro.")
+        
+        # Validação: se name for fornecido, não pode ser vazio
+        if name is not None and not name.strip():
+            raise ValueError("O nome do tópico não pode estar vazio.")
+        
+        # Constrói a query dinamicamente
+        updates = []
+        params = []
+        
+        if name is not None:
+            updates.append("name = ?")
+            params.append(name.strip())
+        if description is not None:
+            updates.append("description = ?")
+            params.append(description.strip() if description else "")
+        if emoji is not None:
+            updates.append("emoji = ?")
+            params.append(emoji.strip() if emoji else "🎫")
+        if button_color is not None:
+            updates.append("button_color = ?")
+            params.append(button_color.strip() if button_color else "primary")
+        
+        if not updates:
+            return  # Nada para atualizar
+        
+        params.append(topic_id)
+        
+        async with self._conn.cursor() as cur:
+            await cur.execute(
+                f"UPDATE ticket_topics SET {', '.join(updates)} WHERE id = ?",
+                params
+            )
+        await self._conn.commit()
+    
     async def delete_ticket_topic(self, topic_id: int) -> None:
         """Deleta um tópico de ticket (cascade remove roles)."""
         if not self._conn:
@@ -635,6 +838,18 @@ class Database:
             )
             rows = await cur.fetchall()
             return tuple(str(row[0]) for row in rows)
+    
+    async def remove_topic_role(self, topic_id: int, role_id: int) -> None:
+        """Remove um cargo de um tópico."""
+        if not self._conn:
+            raise RuntimeError("Database não inicializado. Chame initialize() primeiro.")
+        
+        async with self._conn.cursor() as cur:
+            await cur.execute(
+                "DELETE FROM ticket_topic_roles WHERE topic_id = ? AND role_id = ?",
+                (topic_id, str(role_id)),
+            )
+        await self._conn.commit()
     
     async def create_ticket(
         self,
@@ -706,6 +921,22 @@ class Database:
             )
         await self._conn.commit()
     
+    async def list_open_tickets(self, guild_id: Optional[int] = None) -> Tuple[Dict[str, Any], ...]:
+        """Lista todos os tickets abertos. Se guild_id for fornecido, filtra por guild."""
+        if not self._conn:
+            raise RuntimeError("Database não inicializado. Chame initialize() primeiro.")
+        
+        async with self._conn.cursor() as cur:
+            if guild_id:
+                await cur.execute(
+                    "SELECT * FROM tickets WHERE guild_id = ? AND status = 'open'",
+                    (str(guild_id),),
+                )
+            else:
+                await cur.execute("SELECT * FROM tickets WHERE status = 'open'")
+            rows = await cur.fetchall()
+        return tuple(dict(row) for row in rows)
+
     async def count_open_tickets_by_user(self, guild_id: int, user_id: int) -> int:
         """Conta quantos tickets abertos um usuário tem."""
         if not self._conn:
@@ -767,6 +998,651 @@ class Database:
                 "avg_resolution_hours": round(avg_hours, 2) if avg_hours else 0.0,
                 "resolution_rate": round((closed_count / total * 100) if total > 0 else 0, 2),
             }
+    
+    async def clear_ticket_settings(self, guild_id: int) -> None:
+        """Limpa todas as configurações de tickets de uma guild."""
+        if not self._conn:
+            raise RuntimeError("Database não inicializado. Chame initialize() primeiro.")
+        
+        async with self._conn.cursor() as cur:
+            await cur.execute("DELETE FROM ticket_settings WHERE guild_id = ?", (str(guild_id),))
+        await self._conn.commit()
+    
+    async def clear_ticket_topics(self, guild_id: int) -> None:
+        """Limpa todos os tópicos de tickets de uma guild."""
+        if not self._conn:
+            raise RuntimeError("Database não inicializado. Chame initialize() primeiro.")
+        
+        async with self._conn.cursor() as cur:
+            await cur.execute("DELETE FROM ticket_topics WHERE guild_id = ?", (str(guild_id),))
+        await self._conn.commit()
+    
+    async def clear_all_tickets(self, guild_id: int) -> int:
+        """Limpa todos os tickets (abertos e fechados) de uma guild. Retorna quantidade deletada."""
+        if not self._conn:
+            raise RuntimeError("Database não inicializado. Chame initialize() primeiro.")
+        
+        async with self._conn.cursor() as cur:
+            await cur.execute("SELECT COUNT(*) FROM tickets WHERE guild_id = ?", (str(guild_id),))
+            count = (await cur.fetchone())[0]
+            await cur.execute("DELETE FROM tickets WHERE guild_id = ?", (str(guild_id),))
+        await self._conn.commit()
+        return count
+    
+    async def clear_closed_tickets(self, guild_id: int) -> int:
+        """Limpa apenas tickets fechados de uma guild. Retorna quantidade deletada."""
+        if not self._conn:
+            raise RuntimeError("Database não inicializado. Chame initialize() primeiro.")
+        
+        async with self._conn.cursor() as cur:
+            await cur.execute("SELECT COUNT(*) FROM tickets WHERE guild_id = ? AND status = 'closed'", (str(guild_id),))
+            count = (await cur.fetchone())[0]
+            await cur.execute("DELETE FROM tickets WHERE guild_id = ? AND status = 'closed'", (str(guild_id),))
+        await self._conn.commit()
+        return count
+    
+    async def clear_open_tickets(self, guild_id: int) -> int:
+        """Limpa apenas tickets abertos de uma guild. Retorna quantidade deletada."""
+        if not self._conn:
+            raise RuntimeError("Database não inicializado. Chame initialize() primeiro.")
+        
+        async with self._conn.cursor() as cur:
+            await cur.execute("SELECT COUNT(*) FROM tickets WHERE guild_id = ? AND status = 'open'", (str(guild_id),))
+            count = (await cur.fetchone())[0]
+            await cur.execute("DELETE FROM tickets WHERE guild_id = ? AND status = 'open'", (str(guild_id),))
+        await self._conn.commit()
+        return count
+
+    # ===== Sistema de Ações FiveM =====
+    
+    async def add_action_type(
+        self,
+        guild_id: int,
+        name: str,
+        min_players: int,
+        max_players: int,
+        total_value: float,
+    ) -> int:
+        """Cria um novo tipo de ação."""
+        if not self._conn:
+            raise RuntimeError("Database não inicializado. Chame initialize() primeiro.")
+        
+        async with self._conn.cursor() as cur:
+            await cur.execute(
+                """
+                INSERT INTO action_types (guild_id, name, min_players, max_players, total_value)
+                VALUES (?, ?, ?, ?, ?)
+                """,
+                (str(guild_id), name, min_players, max_players, total_value),
+            )
+            await cur.execute("SELECT last_insert_rowid()")
+            type_id = (await cur.fetchone())[0]
+        await self._conn.commit()
+        return type_id
+    
+    async def get_action_types(self, guild_id: int) -> Tuple[Dict[str, Any], ...]:
+        """Lista todos os tipos de ação do servidor."""
+        if not self._conn:
+            raise RuntimeError("Database não inicializado. Chame initialize() primeiro.")
+        
+        async with self._conn.cursor() as cur:
+            await cur.execute(
+                "SELECT * FROM action_types WHERE guild_id = ? ORDER BY name",
+                (str(guild_id),),
+            )
+            rows = await cur.fetchall()
+            return tuple(dict(row) for row in rows)
+    
+    async def update_action_type(
+        self,
+        type_id: int,
+        name: str,
+        min_players: int,
+        max_players: int,
+        total_value: float,
+    ) -> None:
+        """Atualiza um tipo de ação existente."""
+        if not self._conn:
+            raise RuntimeError("Database não inicializado. Chame initialize() primeiro.")
+        
+        async with self._conn.cursor() as cur:
+            await cur.execute(
+                """
+                UPDATE action_types
+                SET name = ?, min_players = ?, max_players = ?, total_value = ?
+                WHERE id = ?
+                """,
+                (name, min_players, max_players, total_value, type_id),
+            )
+        await self._conn.commit()
+    
+    async def delete_action_type(self, type_id: int) -> None:
+        """Remove um tipo de ação."""
+        if not self._conn:
+            raise RuntimeError("Database não inicializado. Chame initialize() primeiro.")
+        
+        async with self._conn.cursor() as cur:
+            await cur.execute("DELETE FROM action_types WHERE id = ?", (type_id,))
+        await self._conn.commit()
+    
+    async def reset_all_actions(self, guild_id: int) -> None:
+        """Deleta todas as ações ativas, zera stats dos usuários, mas mantém os tipos de ação."""
+        if not self._conn:
+            raise RuntimeError("Database não inicializado. Chame initialize() primeiro.")
+        
+        async with self._conn.cursor() as cur:
+            # Primeiro, deleta participantes e removidos das ações que serão deletadas
+            await cur.execute(
+                """
+                DELETE FROM action_participants 
+                WHERE action_id IN (
+                    SELECT id FROM active_actions WHERE guild_id = ?
+                )
+                """,
+                (str(guild_id),)
+            )
+            
+            await cur.execute(
+                """
+                DELETE FROM action_removed_participants 
+                WHERE action_id IN (
+                    SELECT id FROM active_actions WHERE guild_id = ?
+                )
+                """,
+                (str(guild_id),)
+            )
+            
+            # Depois, deleta todas as ações ativas do servidor
+            await cur.execute(
+                """
+                DELETE FROM active_actions 
+                WHERE guild_id = ?
+                """,
+                (str(guild_id),)
+            )
+            
+            # Zera todas as estatísticas dos usuários do servidor
+            await cur.execute(
+                """
+                UPDATE action_stats 
+                SET participations = 0, 
+                    total_earned = 0.0,
+                    updated_at = CURRENT_TIMESTAMP
+                WHERE guild_id = ?
+                """,
+                (str(guild_id),)
+            )
+            
+            # Reseta o autoincrement de active_actions
+            await cur.execute("DELETE FROM sqlite_sequence WHERE name = 'active_actions'")
+        await self._conn.commit()
+    
+    async def create_active_action(
+        self,
+        guild_id: int,
+        type_id: int,
+        creator_id: int,
+        message_id: int,
+        channel_id: int,
+    ) -> int:
+        """Cria uma ação ativa (com inscrições fechadas inicialmente)."""
+        if not self._conn:
+            raise RuntimeError("Database não inicializado. Chame initialize() primeiro.")
+        
+        async with self._conn.cursor() as cur:
+            await cur.execute(
+                """
+                INSERT INTO active_actions (guild_id, type_id, creator_id, message_id, channel_id, registrations_open)
+                VALUES (?, ?, ?, ?, ?, 0)
+                """,
+                (str(guild_id), type_id, str(creator_id), str(message_id), str(channel_id)),
+            )
+            await cur.execute("SELECT last_insert_rowid()")
+            action_id = (await cur.fetchone())[0]
+        await self._conn.commit()
+        return action_id
+    
+    async def get_active_action(self, action_id: int) -> Optional[Dict[str, Any]]:
+        """Busca uma ação ativa por ID."""
+        if not self._conn:
+            raise RuntimeError("Database não inicializado. Chame initialize() primeiro.")
+        
+        async with self._conn.cursor() as cur:
+            await cur.execute(
+                """
+                SELECT a.*, t.name as type_name, t.min_players, t.max_players, t.total_value
+                FROM active_actions a
+                JOIN action_types t ON a.type_id = t.id
+                WHERE a.id = ?
+                """,
+                (action_id,),
+            )
+            row = await cur.fetchone()
+            return dict(row) if row else None
+    
+    async def get_active_action_by_message(self, message_id: int) -> Optional[Dict[str, Any]]:
+        """Busca uma ação ativa por message_id."""
+        if not self._conn:
+            raise RuntimeError("Database não inicializado. Chame initialize() primeiro.")
+        
+        async with self._conn.cursor() as cur:
+            await cur.execute(
+                """
+                SELECT a.*, t.name as type_name, t.min_players, t.max_players, t.total_value
+                FROM active_actions a
+                JOIN action_types t ON a.type_id = t.id
+                WHERE a.message_id = ?
+                """,
+                (str(message_id),),
+            )
+            row = await cur.fetchone()
+            return dict(row) if row else None
+    
+    async def list_active_actions(self, guild_id: int, status: Optional[str] = None) -> Tuple[Dict[str, Any], ...]:
+        """Lista ações ativas do servidor, opcionalmente filtradas por status."""
+        if not self._conn:
+            raise RuntimeError("Database não inicializado. Chame initialize() primeiro.")
+        
+        async with self._conn.cursor() as cur:
+            if status:
+                await cur.execute(
+                    """
+                    SELECT a.*, t.name as type_name, t.min_players, t.max_players, t.total_value
+                    FROM active_actions a
+                    JOIN action_types t ON a.type_id = t.id
+                    WHERE a.guild_id = ? AND a.status = ?
+                    ORDER BY a.created_at DESC
+                    """,
+                    (str(guild_id), status),
+                )
+            else:
+                await cur.execute(
+                    """
+                    SELECT a.*, t.name as type_name, t.min_players, t.max_players, t.total_value
+                    FROM active_actions a
+                    JOIN action_types t ON a.type_id = t.id
+                    WHERE a.guild_id = ?
+                    ORDER BY a.created_at DESC
+                    """,
+                    (str(guild_id),),
+                )
+            rows = await cur.fetchall()
+            return tuple(dict(row) for row in rows)
+    
+    async def update_action_status(
+        self,
+        action_id: int,
+        status: str,
+        final_value: Optional[float] = None,
+        result: Optional[str] = None,
+        message_id: Optional[int] = None,
+        registrations_open: Optional[bool] = None,
+    ) -> None:
+        """Atualiza o status e resultado de uma ação."""
+        if not self._conn:
+            raise RuntimeError("Database não inicializado. Chame initialize() primeiro.")
+        
+        async with self._conn.cursor() as cur:
+            updates = ["status = ?"]
+            params = [status]
+            
+            if final_value is not None:
+                updates.append("final_value = ?")
+                params.append(final_value)
+            
+            if result:
+                updates.append("result = ?")
+                updates.append("closed_at = CURRENT_TIMESTAMP")
+                params.append(result)
+            
+            if message_id is not None:
+                updates.append("message_id = ?")
+                params.append(str(message_id))
+            
+            if registrations_open is not None:
+                updates.append("registrations_open = ?")
+                params.append(1 if registrations_open else 0)
+            
+            params.append(action_id)
+            
+            await cur.execute(
+                f"UPDATE active_actions SET {', '.join(updates)} WHERE id = ?",
+                params
+            )
+        await self._conn.commit()
+    
+    async def delete_active_action(self, action_id: int) -> None:
+        """Deleta uma ação ativa."""
+        if not self._conn:
+            raise RuntimeError("Database não inicializado. Chame initialize() primeiro.")
+        
+        async with self._conn.cursor() as cur:
+            await cur.execute("DELETE FROM active_actions WHERE id = ?", (action_id,))
+        await self._conn.commit()
+    
+    async def add_participant(self, action_id: int, user_id: int) -> None:
+        """Adiciona um participante à ação."""
+        if not self._conn:
+            raise RuntimeError("Database não inicializado. Chame initialize() primeiro.")
+        
+        async with self._conn.cursor() as cur:
+            await cur.execute(
+                "INSERT OR IGNORE INTO action_participants (action_id, user_id) VALUES (?, ?)",
+                (action_id, str(user_id)),
+            )
+        await self._conn.commit()
+    
+    async def remove_participant(self, action_id: int, user_id: int) -> None:
+        """Remove um participante da ação."""
+        if not self._conn:
+            raise RuntimeError("Database não inicializado. Chame initialize() primeiro.")
+        
+        async with self._conn.cursor() as cur:
+            await cur.execute(
+                "DELETE FROM action_participants WHERE action_id = ? AND user_id = ?",
+                (action_id, str(user_id)),
+            )
+        await self._conn.commit()
+    
+    async def get_participants(self, action_id: int) -> Tuple[Dict[str, Any], ...]:
+        """Lista todos os participantes de uma ação."""
+        if not self._conn:
+            raise RuntimeError("Database não inicializado. Chame initialize() primeiro.")
+        
+        async with self._conn.cursor() as cur:
+            await cur.execute(
+                "SELECT * FROM action_participants WHERE action_id = ? ORDER BY joined_at",
+                (action_id,),
+            )
+            rows = await cur.fetchall()
+            return tuple(dict(row) for row in rows)
+    
+    async def remove_participant_by_mod(self, action_id: int, user_id: int, removed_by: int) -> None:
+        """Remove um participante da ação e adiciona à lista de removidos."""
+        if not self._conn:
+            raise RuntimeError("Database não inicializado. Chame initialize() primeiro.")
+        
+        async with self._conn.cursor() as cur:
+            # Remove da lista de participantes
+            await cur.execute(
+                "DELETE FROM action_participants WHERE action_id = ? AND user_id = ?",
+                (action_id, str(user_id)),
+            )
+            # Adiciona à lista de removidos
+            await cur.execute(
+                """
+                INSERT INTO action_removed_participants (action_id, user_id, removed_by)
+                VALUES (?, ?, ?)
+                ON CONFLICT(action_id, user_id) DO UPDATE SET
+                    removed_by = ?,
+                    removed_at = CURRENT_TIMESTAMP
+                """,
+                (action_id, str(user_id), str(removed_by), str(removed_by)),
+            )
+        await self._conn.commit()
+    
+    async def get_removed_participants(self, action_id: int) -> Tuple[Dict[str, Any], ...]:
+        """Lista todos os participantes removidos de uma ação."""
+        if not self._conn:
+            raise RuntimeError("Database não inicializado. Chame initialize() primeiro.")
+        
+        async with self._conn.cursor() as cur:
+            await cur.execute(
+                "SELECT * FROM action_removed_participants WHERE action_id = ? ORDER BY removed_at",
+                (action_id,),
+            )
+            rows = await cur.fetchall()
+            return tuple(dict(row) for row in rows)
+    
+    async def restore_participant(self, action_id: int, user_id: int) -> None:
+        """Restaura um participante removido."""
+        if not self._conn:
+            raise RuntimeError("Database não inicializado. Chame initialize() primeiro.")
+        
+        async with self._conn.cursor() as cur:
+            # Remove da lista de removidos
+            await cur.execute(
+                "DELETE FROM action_removed_participants WHERE action_id = ? AND user_id = ?",
+                (action_id, str(user_id)),
+            )
+            # Adiciona de volta à lista de participantes
+            await cur.execute(
+                """
+                INSERT INTO action_participants (action_id, user_id, joined_at)
+                VALUES (?, ?, CURRENT_TIMESTAMP)
+                ON CONFLICT(action_id, user_id) DO NOTHING
+                """,
+                (action_id, str(user_id)),
+            )
+        await self._conn.commit()
+    
+    async def count_participants(self, action_id: int) -> int:
+        """Conta o número de participantes de uma ação."""
+        if not self._conn:
+            raise RuntimeError("Database não inicializado. Chame initialize() primeiro.")
+        
+        async with self._conn.cursor() as cur:
+            await cur.execute(
+                "SELECT COUNT(*) FROM action_participants WHERE action_id = ?",
+                (action_id,),
+            )
+            row = await cur.fetchone()
+            return row[0] if row else 0
+    
+    async def increment_stats(self, guild_id: int, user_id: int, amount: float) -> None:
+        """Incrementa participações e total ganho do usuário."""
+        if not self._conn:
+            raise RuntimeError("Database não inicializado. Chame initialize() primeiro.")
+        
+        async with self._conn.cursor() as cur:
+            await cur.execute(
+                """
+                INSERT INTO action_stats (guild_id, user_id, participations, total_earned)
+                VALUES (?, ?, 1, ?)
+                ON CONFLICT(guild_id, user_id) DO UPDATE SET
+                    participations = participations + 1,
+                    total_earned = total_earned + ?,
+                    updated_at = CURRENT_TIMESTAMP
+                """,
+                (str(guild_id), str(user_id), amount, amount),
+            )
+        await self._conn.commit()
+    
+    async def increment_participation_only(self, guild_id: int, user_id: int) -> None:
+        """Incrementa apenas participações (sem valor ganho)."""
+        if not self._conn:
+            raise RuntimeError("Database não inicializado. Chame initialize() primeiro.")
+        
+        async with self._conn.cursor() as cur:
+            await cur.execute(
+                """
+                INSERT INTO action_stats (guild_id, user_id, participations, total_earned)
+                VALUES (?, ?, 1, 0.0)
+                ON CONFLICT(guild_id, user_id) DO UPDATE SET
+                    participations = participations + 1,
+                    updated_at = CURRENT_TIMESTAMP
+                """,
+                (str(guild_id), str(user_id)),
+            )
+        await self._conn.commit()
+    
+    async def get_user_stats(self, guild_id: int, user_id: int) -> Optional[Dict[str, Any]]:
+        """Busca estatísticas do usuário."""
+        if not self._conn:
+            raise RuntimeError("Database não inicializado. Chame initialize() primeiro.")
+        
+        async with self._conn.cursor() as cur:
+            await cur.execute(
+                "SELECT * FROM action_stats WHERE guild_id = ? AND user_id = ?",
+                (str(guild_id), str(user_id)),
+            )
+            row = await cur.fetchone()
+            return dict(row) if row else None
+    
+    async def get_action_ranking(self, guild_id: int, limit: int = 10) -> Tuple[Dict[str, Any], ...]:
+        """Retorna ranking por participações, ordenado por participações DESC, total_earned DESC."""
+        if not self._conn:
+            raise RuntimeError("Database não inicializado. Chame initialize() primeiro.")
+        
+        async with self._conn.cursor() as cur:
+            await cur.execute(
+                """
+                SELECT * FROM action_stats
+                WHERE guild_id = ?
+                ORDER BY participations DESC, total_earned DESC
+                LIMIT ?
+                """,
+                (str(guild_id), limit),
+            )
+            rows = await cur.fetchall()
+        return tuple(dict(row) for row in rows)
+
+    async def get_action_settings(self, guild_id: int) -> Dict[str, Any]:
+        """Busca configurações de ações do servidor."""
+        if not self._conn:
+            raise RuntimeError("Database não inicializado. Chame initialize() primeiro.")
+        
+        async with self._conn.cursor() as cur:
+            await cur.execute(
+                "SELECT * FROM action_settings WHERE guild_id = ?",
+                (str(guild_id),),
+            )
+            row = await cur.fetchone()
+            return dict(row) if row else {}
+    
+    async def upsert_action_settings(
+        self,
+        guild_id: int,
+        responsible_role_id: Optional[int] = None,
+        action_channel_id: Optional[int] = None,
+        ranking_channel_id: Optional[int] = None,
+    ) -> None:
+        """Salva ou atualiza configurações de ações."""
+        if not self._conn:
+            raise RuntimeError("Database não inicializado. Chame initialize() primeiro.")
+        
+        existing = await self.get_action_settings(guild_id)
+        merged = {**existing}
+        
+        if responsible_role_id is not None:
+            merged["responsible_role_id"] = str(responsible_role_id)
+        
+        if action_channel_id is not None:
+            merged["action_channel_id"] = str(action_channel_id)
+        
+        if ranking_channel_id is not None:
+            merged["ranking_channel_id"] = str(ranking_channel_id)
+        
+        async with self._conn.cursor() as cur:
+            # Verifica colunas existentes na tabela
+            await cur.execute("PRAGMA table_info(action_settings)")
+            columns = [row[1] for row in await cur.fetchall()]
+            
+            # Migração para action_channel_id
+            if "action_channel_id" not in columns:
+                try:
+                    await cur.execute("ALTER TABLE action_settings ADD COLUMN action_channel_id TEXT")
+                except aiosqlite.OperationalError:
+                    pass
+            
+            # Migração para ranking_channel_id
+            if "ranking_channel_id" not in columns:
+                try:
+                    await cur.execute("ALTER TABLE action_settings ADD COLUMN ranking_channel_id TEXT")
+                except aiosqlite.OperationalError:
+                    pass
+            
+            # Migração para ranking_message_id
+            if "ranking_message_id" not in columns:
+                try:
+                    await cur.execute("ALTER TABLE action_settings ADD COLUMN ranking_message_id TEXT")
+                except aiosqlite.OperationalError:
+                    pass
+            
+            await cur.execute(
+                """
+                INSERT INTO action_settings (guild_id, responsible_role_id, action_channel_id, ranking_channel_id)
+                VALUES (?, ?, ?, ?)
+                ON CONFLICT(guild_id) DO UPDATE SET
+                    responsible_role_id = COALESCE(excluded.responsible_role_id, responsible_role_id),
+                    action_channel_id = COALESCE(excluded.action_channel_id, action_channel_id),
+                    ranking_channel_id = COALESCE(excluded.ranking_channel_id, ranking_channel_id),
+                    updated_at = CURRENT_TIMESTAMP
+                """,
+                (str(guild_id), merged.get("responsible_role_id"), merged.get("action_channel_id"), merged.get("ranking_channel_id")),
+            )
+        await self._conn.commit()
+    
+    async def add_responsible_role(self, guild_id: int, role_id: int) -> None:
+        """Adiciona um cargo responsável."""
+        if not self._conn:
+            raise RuntimeError("Database não inicializado. Chame initialize() primeiro.")
+        
+        async with self._conn.cursor() as cur:
+            await cur.execute(
+                """
+                INSERT OR IGNORE INTO action_responsible_roles (guild_id, role_id)
+                VALUES (?, ?)
+                """,
+                (str(guild_id), str(role_id)),
+            )
+        await self._conn.commit()
+    
+    async def remove_responsible_role(self, guild_id: int, role_id: int) -> None:
+        """Remove um cargo responsável."""
+        if not self._conn:
+            raise RuntimeError("Database não inicializado. Chame initialize() primeiro.")
+        
+        async with self._conn.cursor() as cur:
+            await cur.execute(
+                """
+                DELETE FROM action_responsible_roles
+                WHERE guild_id = ? AND role_id = ?
+                """,
+                (str(guild_id), str(role_id)),
+            )
+        await self._conn.commit()
+    
+    async def get_responsible_roles(self, guild_id: int) -> list:
+        """Retorna lista de IDs dos cargos responsáveis."""
+        if not self._conn:
+            raise RuntimeError("Database não inicializado. Chame initialize() primeiro.")
+        
+        async with self._conn.cursor() as cur:
+            await cur.execute(
+                "SELECT role_id FROM action_responsible_roles WHERE guild_id = ?",
+                (str(guild_id),),
+            )
+            rows = await cur.fetchall()
+            return [int(row[0]) for row in rows if row[0] and str(row[0]).isdigit()]
+    
+    async def upsert_ranking_message_id(self, guild_id: int, message_id: int) -> None:
+        """Salva ou atualiza o ID da mensagem do ranking."""
+        if not self._conn:
+            raise RuntimeError("Database não inicializado. Chame initialize() primeiro.")
+        
+        async with self._conn.cursor() as cur:
+            # Verifica se ranking_message_id existe na tabela
+            await cur.execute("PRAGMA table_info(action_settings)")
+            columns = [row[1] for row in await cur.fetchall()]
+            
+            if "ranking_message_id" not in columns:
+                try:
+                    await cur.execute("ALTER TABLE action_settings ADD COLUMN ranking_message_id TEXT")
+                except aiosqlite.OperationalError:
+                    pass
+            
+            await cur.execute(
+                """
+                INSERT INTO action_settings (guild_id, ranking_message_id)
+                VALUES (?, ?)
+                ON CONFLICT(guild_id) DO UPDATE SET
+                    ranking_message_id = excluded.ranking_message_id,
+                    updated_at = CURRENT_TIMESTAMP
+                """,
+                (str(guild_id), str(message_id)),
+            )
+        await self._conn.commit()
     
     async def close(self) -> None:
         """Fecha a conexão com o banco de dados."""
