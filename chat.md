@@ -45,3 +45,36 @@
 - ✅ Erro de layout UI no `ticket_command.py` corrigido
 - ✅ Botões "➕ Criar" reorganizados para respeitar limite de 5 componentes por linha
 - ⏳ Aguardando teste de inicialização completa do bot
+
+## Melhorias no Sistema de Batalha Naval
+
+### 3. Melhorias de UX no Setup de Navios
+
+3.1. **Modal Simplificado para Navios de 1 Posição**
+   - **Problema**: Modal pedia coordenada inicial e final mesmo para navios de 1 posição (ship1)
+   - **Solução**: 
+     - Navios de 1 posição agora pedem apenas uma coordenada
+     - Modal adapta-se dinamicamente baseado no tamanho do navio
+     - Campo único "Coordenada" para ship1, campos "Coordenada Inicial" + "Direção" para navios maiores
+
+3.2. **Cálculo Automático de Coordenada Final**
+   - **Problema**: Usuário precisava calcular manualmente a coordenada final baseada na inicial e direção
+   - **Solução**:
+     - Sistema calcula automaticamente a coordenada final baseada na inicial e direção (H/V)
+     - Placeholder do campo de direção mostra exemplos: "H ou V - Ex: A1 H → A2, A1 V → B1"
+     - Quando há erro de posicionamento, mostra todas as coordenadas finais possíveis a partir da inicial
+     - Método `_calculate_possible_end_coords()` calcula todas as opções válidas
+
+3.3. **Correção de View Persistente**
+   - **Problema**: Erro "View is not persistent" ao editar mensagens de partida
+   - **Solução**:
+     - Removido `self.bot.add_view()` desnecessário ao editar mensagens
+     - Views agora são apenas editadas junto com a mensagem
+     - Select menus já possuem `custom_id` para persistência
+
+### Status Atual do Sistema Naval:
+- ✅ Modal adaptativo para navios de diferentes tamanhos
+- ✅ Cálculo automático de coordenada final
+- ✅ Mensagens de erro informativas com coordenadas possíveis
+- ✅ View persistente corrigida
+- ✅ Sistema pronto para testes

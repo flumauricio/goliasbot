@@ -363,6 +363,62 @@ class Database:
                 )
                 """
             )
+            
+            # Tabelas do sistema de Batalha Naval
+            await cur.execute(
+                """
+                CREATE TABLE IF NOT EXISTS naval_games (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    guild_id TEXT NOT NULL,
+                    player1_id TEXT NOT NULL,
+                    player2_id TEXT NOT NULL,
+                    current_turn TEXT NOT NULL,
+                    status TEXT NOT NULL DEFAULT 'setup',
+                    channel_id TEXT NOT NULL,
+                    message_id TEXT,
+                    player1_board TEXT NOT NULL,
+                    player2_board TEXT NOT NULL,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    finished_at TIMESTAMP,
+                    last_move_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+                """
+            )
+            
+            await cur.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_naval_games_guild_status 
+                ON naval_games(guild_id, status)
+                """
+            )
+            
+            await cur.execute(
+                """
+                CREATE TABLE IF NOT EXISTS naval_stats (
+                    guild_id TEXT NOT NULL,
+                    user_id TEXT NOT NULL,
+                    wins INTEGER NOT NULL DEFAULT 0,
+                    losses INTEGER NOT NULL DEFAULT 0,
+                    points INTEGER NOT NULL DEFAULT 0,
+                    total_hits INTEGER NOT NULL DEFAULT 0,
+                    total_misses INTEGER NOT NULL DEFAULT 0,
+                    current_streak INTEGER NOT NULL DEFAULT 0,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    PRIMARY KEY (guild_id, user_id)
+                )
+                """
+            )
+            
+            await cur.execute(
+                """
+                CREATE TABLE IF NOT EXISTS naval_queue (
+                    guild_id TEXT NOT NULL,
+                    user_id TEXT NOT NULL,
+                    joined_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    PRIMARY KEY (guild_id, user_id)
+                )
+                """
+            )
 
         await self._conn.commit()
         LOGGER.info("Migrações aplicadas em %s", self.path)
@@ -2012,6 +2068,380 @@ class Database:
             )
             rows = await cur.fetchall()
             return {row[0]: bool(row[1]) for row in rows}
+    
+    # ===== Sistema de Batalha Naval =====
+    
+    async def create_naval_game(
+        self,
+        guild_id: int,
+        player1_id: int,
+        player2_id: int,
+        channel_id: int,
+        message_id: Optional[int] = None,
+    ) -> int:
+        """Cria uma nova partida de batalha naval."""
+        if not self._conn:
+            raise RuntimeError("Database não inicializado. Chame initialize() primeiro.")
+        
+        import json
+        empty_board = json.dumps({"ships": [], "shots": []})
+        
+        async with self._conn.cursor() as cur:
+            await cur.execute(
+                """
+                INSERT INTO naval_games (guild_id, player1_id, player2_id, current_turn, channel_id, message_id, player1_board, player2_board)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (str(guild_id), str(player1_id), str(player2_id), str(player1_id), str(channel_id), str(message_id) if message_id else None, empty_board, empty_board),
+            )
+            await cur.execute("SELECT last_insert_rowid()")
+            game_id = (await cur.fetchone())[0]
+        await self._conn.commit()
+        return game_id
+    
+    async def get_naval_game(self, game_id: int) -> Optional[Dict[str, Any]]:
+        """Busca uma partida por ID."""
+        if not self._conn:
+            raise RuntimeError("Database não inicializado. Chame initialize() primeiro.")
+        
+        async with self._conn.cursor() as cur:
+            await cur.execute("SELECT * FROM naval_games WHERE id = ?", (game_id,))
+            row = await cur.fetchone()
+            return dict(row) if row else None
+    
+    async def get_naval_game_by_players(self, guild_id: int, player_id: int) -> Optional[Dict[str, Any]]:
+        """Busca partida ativa de um jogador."""
+        if not self._conn:
+            raise RuntimeError("Database não inicializado. Chame initialize() primeiro.")
+        
+        async with self._conn.cursor() as cur:
+            await cur.execute(
+                """
+                SELECT * FROM naval_games 
+                WHERE guild_id = ? AND status IN ('setup', 'active') 
+                AND (player1_id = ? OR player2_id = ?)
+                LIMIT 1
+                """,
+                (str(guild_id), str(player_id), str(player_id)),
+            )
+            row = await cur.fetchone()
+            return dict(row) if row else None
+    
+    async def update_naval_game(
+        self,
+        game_id: int,
+        *,
+        current_turn: Optional[str] = None,
+        status: Optional[str] = None,
+        message_id: Optional[int] = None,
+        player1_board: Optional[str] = None,
+        player2_board: Optional[str] = None,
+        finished_at: Optional[str] = None,
+    ) -> None:
+        """Atualiza uma partida."""
+        if not self._conn:
+            raise RuntimeError("Database não inicializado. Chame initialize() primeiro.")
+        
+        updates = []
+        params = []
+        
+        if current_turn is not None:
+            updates.append("current_turn = ?")
+            params.append(str(current_turn))
+        if status is not None:
+            updates.append("status = ?")
+            params.append(status)
+        if message_id is not None:
+            updates.append("message_id = ?")
+            params.append(str(message_id))
+        if player1_board is not None:
+            updates.append("player1_board = ?")
+            params.append(player1_board)
+        if player2_board is not None:
+            updates.append("player2_board = ?")
+            params.append(player2_board)
+        if finished_at is not None:
+            updates.append("finished_at = ?")
+            params.append(finished_at)
+        
+        if not updates:
+            return
+        
+        params.append(game_id)
+        
+        async with self._conn.cursor() as cur:
+            await cur.execute(
+                f"UPDATE naval_games SET {', '.join(updates)} WHERE id = ?",
+                params
+            )
+        await self._conn.commit()
+    
+    async def update_naval_game_last_move(self, game_id: int) -> None:
+        """Atualiza o timestamp do último movimento."""
+        if not self._conn:
+            raise RuntimeError("Database não inicializado. Chame initialize() primeiro.")
+        
+        async with self._conn.cursor() as cur:
+            await cur.execute(
+                "UPDATE naval_games SET last_move_at = CURRENT_TIMESTAMP WHERE id = ?",
+                (game_id,)
+            )
+        await self._conn.commit()
+    
+    async def get_stale_games(self, timeout_minutes: int = 5) -> Tuple[Dict[str, Any], ...]:
+        """Busca partidas sem movimento há mais de X minutos."""
+        if not self._conn:
+            raise RuntimeError("Database não inicializado. Chame initialize() primeiro.")
+        
+        async with self._conn.cursor() as cur:
+            await cur.execute(
+                """
+                SELECT * FROM naval_games 
+                WHERE status IN ('setup', 'active')
+                AND datetime(last_move_at, '+' || ? || ' minutes') < datetime('now')
+                """,
+                (timeout_minutes,),
+            )
+            rows = await cur.fetchall()
+            return tuple(dict(row) for row in rows)
+    
+    async def cleanup_abandoned_games(self, days: int = 1) -> int:
+        """Remove partidas antigas (abandonadas há mais de X dias)."""
+        if not self._conn:
+            raise RuntimeError("Database não inicializado. Chame initialize() primeiro.")
+        
+        async with self._conn.cursor() as cur:
+            await cur.execute(
+                """
+                SELECT COUNT(*) FROM naval_games 
+                WHERE status = 'finished' 
+                AND datetime(finished_at, '+' || ? || ' days') < datetime('now')
+                """,
+                (days,),
+            )
+            count = (await cur.fetchone())[0]
+            
+            await cur.execute(
+                """
+                DELETE FROM naval_games 
+                WHERE status = 'finished' 
+                AND datetime(finished_at, '+' || ? || ' days') < datetime('now')
+                """,
+                (days,),
+            )
+        await self._conn.commit()
+        return count
+    
+    async def get_naval_stats(self, guild_id: int, user_id: int) -> Optional[Dict[str, Any]]:
+        """Busca estatísticas de um jogador."""
+        if not self._conn:
+            raise RuntimeError("Database não inicializado. Chame initialize() primeiro.")
+        
+        async with self._conn.cursor() as cur:
+            await cur.execute(
+                "SELECT * FROM naval_stats WHERE guild_id = ? AND user_id = ?",
+                (str(guild_id), str(user_id)),
+            )
+            row = await cur.fetchone()
+            return dict(row) if row else None
+    
+    async def update_naval_stats(
+        self,
+        guild_id: int,
+        user_id: int,
+        *,
+        wins: Optional[int] = None,
+        losses: Optional[int] = None,
+        points: Optional[int] = None,
+        total_hits: Optional[int] = None,
+        total_misses: Optional[int] = None,
+    ) -> None:
+        """Atualiza estatísticas de um jogador."""
+        if not self._conn:
+            raise RuntimeError("Database não inicializado. Chame initialize() primeiro.")
+        
+        existing = await self.get_naval_stats(guild_id, user_id)
+        if not existing:
+            # Cria registro inicial
+            async with self._conn.cursor() as cur:
+                await cur.execute(
+                    """
+                    INSERT INTO naval_stats (guild_id, user_id, wins, losses, points, total_hits, total_misses)
+                    VALUES (?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        str(guild_id),
+                        str(user_id),
+                        wins or 0,
+                        losses or 0,
+                        points or 0,
+                        total_hits or 0,
+                        total_misses or 0,
+                    ),
+                )
+            await self._conn.commit()
+            existing = await self.get_naval_stats(guild_id, user_id)
+        
+        updates = []
+        params = []
+        
+        if wins is not None:
+            updates.append("wins = wins + ?")
+            params.append(wins)
+        if losses is not None:
+            updates.append("losses = losses + ?")
+            params.append(losses)
+        if points is not None:
+            updates.append("points = points + ?")
+            params.append(points)
+        if total_hits is not None:
+            updates.append("total_hits = total_hits + ?")
+            params.append(total_hits)
+        if total_misses is not None:
+            updates.append("total_misses = total_misses + ?")
+            params.append(total_misses)
+        
+        if not updates:
+            return
+        
+        params.extend([str(guild_id), str(user_id)])
+        
+        async with self._conn.cursor() as cur:
+            await cur.execute(
+                f"UPDATE naval_stats SET {', '.join(updates)}, updated_at = CURRENT_TIMESTAMP WHERE guild_id = ? AND user_id = ?",
+                params
+            )
+        await self._conn.commit()
+    
+    async def increment_naval_streak(self, guild_id: int, user_id: int) -> None:
+        """Incrementa a sequência de vitórias."""
+        if not self._conn:
+            raise RuntimeError("Database não inicializado. Chame initialize() primeiro.")
+        
+        async with self._conn.cursor() as cur:
+            await cur.execute(
+                """
+                INSERT INTO naval_stats (guild_id, user_id, current_streak)
+                VALUES (?, ?, 1)
+                ON CONFLICT(guild_id, user_id) DO UPDATE SET
+                    current_streak = current_streak + 1,
+                    updated_at = CURRENT_TIMESTAMP
+                """,
+                (str(guild_id), str(user_id)),
+            )
+        await self._conn.commit()
+    
+    async def reset_naval_streak(self, guild_id: int, user_id: int) -> None:
+        """Reseta a sequência de vitórias."""
+        if not self._conn:
+            raise RuntimeError("Database não inicializado. Chame initialize() primeiro.")
+        
+        async with self._conn.cursor() as cur:
+            await cur.execute(
+                """
+                UPDATE naval_stats 
+                SET current_streak = 0, updated_at = CURRENT_TIMESTAMP
+                WHERE guild_id = ? AND user_id = ?
+                """,
+                (str(guild_id), str(user_id)),
+            )
+        await self._conn.commit()
+    
+    async def get_naval_ranking(self, guild_id: int, limit: int = 10) -> Tuple[Dict[str, Any], ...]:
+        """Retorna ranking de jogadores por pontos."""
+        if not self._conn:
+            raise RuntimeError("Database não inicializado. Chame initialize() primeiro.")
+        
+        async with self._conn.cursor() as cur:
+            await cur.execute(
+                """
+                SELECT * FROM naval_stats
+                WHERE guild_id = ?
+                ORDER BY points DESC, wins DESC, current_streak DESC
+                LIMIT ?
+                """,
+                (str(guild_id), limit),
+            )
+            rows = await cur.fetchall()
+            return tuple(dict(row) for row in rows)
+    
+    async def add_to_queue(self, guild_id: int, user_id: int) -> None:
+        """Adiciona jogador à fila de matchmaking."""
+        if not self._conn:
+            raise RuntimeError("Database não inicializado. Chame initialize() primeiro.")
+        
+        async with self._conn.cursor() as cur:
+            await cur.execute(
+                """
+                INSERT OR REPLACE INTO naval_queue (guild_id, user_id, joined_at)
+                VALUES (?, ?, CURRENT_TIMESTAMP)
+                """,
+                (str(guild_id), str(user_id)),
+            )
+        await self._conn.commit()
+    
+    async def remove_from_queue(self, guild_id: int, user_id: int) -> None:
+        """Remove jogador da fila."""
+        if not self._conn:
+            raise RuntimeError("Database não inicializado. Chame initialize() primeiro.")
+        
+        async with self._conn.cursor() as cur:
+            await cur.execute(
+                "DELETE FROM naval_queue WHERE guild_id = ? AND user_id = ?",
+                (str(guild_id), str(user_id)),
+            )
+        await self._conn.commit()
+    
+    async def get_queue(self, guild_id: int) -> Tuple[Dict[str, Any], ...]:
+        """Lista jogadores na fila."""
+        if not self._conn:
+            raise RuntimeError("Database não inicializado. Chame initialize() primeiro.")
+        
+        async with self._conn.cursor() as cur:
+            await cur.execute(
+                "SELECT * FROM naval_queue WHERE guild_id = ? ORDER BY joined_at",
+                (str(guild_id),),
+            )
+            rows = await cur.fetchall()
+            return tuple(dict(row) for row in rows)
+    
+    async def match_players(self, guild_id: int) -> Optional[Tuple[int, int]]:
+        """Tenta fazer match entre dois jogadores na fila. Retorna (player1_id, player2_id) ou None."""
+        if not self._conn:
+            raise RuntimeError("Database não inicializado. Chame initialize() primeiro.")
+        
+        queue = await self.get_queue(guild_id)
+        if len(queue) < 2:
+            return None
+        
+        # Pega os dois primeiros
+        player1_id = int(queue[0]["user_id"])
+        player2_id = int(queue[1]["user_id"])
+        
+        # Remove ambos da fila
+        await self.remove_from_queue(guild_id, player1_id)
+        await self.remove_from_queue(guild_id, player2_id)
+        
+        return (player1_id, player2_id)
+    
+    async def list_active_naval_games(self, guild_id: Optional[int] = None) -> Tuple[Dict[str, Any], ...]:
+        """Lista partidas ativas (setup ou active)."""
+        if not self._conn:
+            raise RuntimeError("Database não inicializado. Chame initialize() primeiro.")
+        
+        async with self._conn.cursor() as cur:
+            if guild_id:
+                await cur.execute(
+                    "SELECT * FROM naval_games WHERE guild_id = ? AND status IN ('setup', 'active')",
+                    (str(guild_id),),
+                )
+            else:
+                await cur.execute(
+                    "SELECT * FROM naval_games WHERE status IN ('setup', 'active')"
+                )
+            rows = await cur.fetchall()
+            return tuple(dict(row) for row in rows)
+    
     async def close(self) -> None:
         """Fecha a conexão com o banco de dados."""
         if self._conn:

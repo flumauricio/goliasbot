@@ -17,6 +17,7 @@ from .action_config import ActionSetupView
 from .ticket_command import TicketSetupView
 from .registration_config import RegistrationConfigView
 from .permissions_config import PermissionsView
+from .naval_command import NavalCog
 
 __all__ = [
     "SetupCog",
@@ -44,5 +45,6 @@ __all__ = [
     "TicketSetupView",
     "RegistrationConfigView",
     "PermissionsView",
+    "NavalCog",
 ]
 

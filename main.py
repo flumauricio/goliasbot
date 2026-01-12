@@ -24,6 +24,7 @@ from actions import (
     VoiceConfigCog,
     VoiceMonitorCog,
     VoiceCommandsCog,
+    NavalCog,
 )
 # IMPORTAR O NOVO COG
 from actions.server_manage import ServerManageCog 
@@ -70,6 +71,7 @@ async def build_bot() -> commands.Bot:
             await self.add_cog(VoiceConfigCog(self, db))
             await self.add_cog(VoiceMonitorCog(self, db))
             await self.add_cog(VoiceCommandsCog(self, db))
+            await self.add_cog(NavalCog(self, db))
             
             self.add_view(RegistrationView(db, config))
             self.add_view(TicketOpenView(db))
