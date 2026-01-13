@@ -20,7 +20,6 @@ class Database:
         self._conn = await aiosqlite.connect(self.path)
         self._conn.row_factory = aiosqlite.Row
         await self.migrate()
-        LOGGER.info("Database inicializado: %s", self.path)
 
     async def migrate(self) -> None:
         """Executa as migrações do banco de dados."""
@@ -77,6 +76,8 @@ class Database:
                 await cur.execute("ALTER TABLE settings ADD COLUMN role_adv1 TEXT")
             if "role_adv2" not in cols:
                 await cur.execute("ALTER TABLE settings ADD COLUMN role_adv2 TEXT")
+            if "channel_naval" not in cols:
+                await cur.execute("ALTER TABLE settings ADD COLUMN channel_naval TEXT")
 
 
             # Permissões de comandos por guild
@@ -419,9 +420,44 @@ class Database:
                 )
                 """
             )
+            
+            # Tabela para logs de membros (comentários, ADVs, moderações, etc.)
+            await cur.execute(
+                """
+                CREATE TABLE IF NOT EXISTS member_logs (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    guild_id TEXT NOT NULL,
+                    target_id TEXT NOT NULL,
+                    author_id TEXT NOT NULL,
+                    type TEXT NOT NULL,
+                    content TEXT,
+                    points_delta INTEGER,
+                    timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+                """
+            )
+            
+            await cur.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_member_logs_lookup 
+                ON member_logs(guild_id, target_id, timestamp DESC)
+                """
+            )
+            
+            # Tabela para sistema de pontos de membros
+            await cur.execute(
+                """
+                CREATE TABLE IF NOT EXISTS member_points (
+                    user_id TEXT NOT NULL,
+                    guild_id TEXT NOT NULL,
+                    total_points INTEGER NOT NULL DEFAULT 0,
+                    last_update TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    PRIMARY KEY (user_id, guild_id)
+                )
+                """
+            )
 
         await self._conn.commit()
-        LOGGER.info("Migrações aplicadas em %s", self.path)
 
     async def upsert_settings(
         self,
@@ -433,6 +469,7 @@ class Database:
         channel_leaves: Optional[int] = None,
         channel_approval: Optional[int] = None,
         channel_records: Optional[int] = None,
+        channel_naval: Optional[int] = None,
         role_set: Optional[int] = None,
         role_member: Optional[int] = None,
         role_adv1: Optional[int] = None,
@@ -449,6 +486,7 @@ class Database:
             "channel_leaves": channel_leaves,
             "channel_approval": channel_approval,
             "channel_records": channel_records,
+            "channel_naval": channel_naval,
             "role_set": role_set,
             "role_member": role_member,
             "role_adv1": role_adv1,
@@ -469,12 +507,13 @@ class Database:
                 channel_leaves,
                 channel_approval,
                 channel_records,
+                channel_naval,
                 role_set,
                 role_member,
                 role_adv1,
                 role_adv2,
                 message_set_embed
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(guild_id) DO UPDATE SET
                 channel_registration_embed=excluded.channel_registration_embed,
                 channel_welcome=excluded.channel_welcome,
@@ -482,6 +521,7 @@ class Database:
                 channel_leaves=excluded.channel_leaves,
                 channel_approval=excluded.channel_approval,
                 channel_records=excluded.channel_records,
+                channel_naval=excluded.channel_naval,
                 role_set=excluded.role_set,
                 role_member=excluded.role_member,
                 role_adv1=excluded.role_adv1,
@@ -497,6 +537,7 @@ class Database:
                 str(merged.get("channel_leaves")) if merged.get("channel_leaves") else None,
                 str(merged.get("channel_approval")) if merged.get("channel_approval") else None,
                 str(merged.get("channel_records")) if merged.get("channel_records") else None,
+                str(merged.get("channel_naval")) if merged.get("channel_naval") else None,
                 str(merged.get("role_set")) if merged.get("role_set") else None,
                 str(merged.get("role_member")) if merged.get("role_member") else None,
                 str(merged.get("role_adv1")) if merged.get("role_adv1") else None,
@@ -1941,6 +1982,107 @@ class Database:
             )
         await self._conn.commit()
     
+    async def adjust_voice_time(self, guild_id: int, user_id: int, seconds_delta: int) -> int:
+        """Ajusta o tempo total de voz do usuário (adiciona ou remove segundos).
+        
+        Distribui o ajuste proporcionalmente entre os canais existentes, ou cria
+        uma entrada em um canal padrão se não houver registros.
+        
+        Args:
+            guild_id: ID do servidor
+            user_id: ID do usuário
+            seconds_delta: Segundos a adicionar (positivo) ou remover (negativo)
+            
+        Returns:
+            Novo tempo total em segundos
+        """
+        if not self._conn:
+            raise RuntimeError("Database não inicializado. Chame initialize() primeiro.")
+        
+        async with self._conn.cursor() as cur:
+            # Busca estatísticas atuais por canal
+            await cur.execute(
+                """
+                SELECT channel_id, total_seconds FROM voice_stats
+                WHERE guild_id = ? AND user_id = ?
+                ORDER BY total_seconds DESC
+                """,
+                (str(guild_id), str(user_id))
+            )
+            rows = await cur.fetchall()
+            
+            if not rows:
+                # Se não houver registros, cria um em um canal padrão (0 = canal geral)
+                if seconds_delta > 0:
+                    await cur.execute(
+                        """
+                        INSERT INTO voice_stats (guild_id, user_id, channel_id, total_seconds)
+                        VALUES (?, ?, ?, ?)
+                        """,
+                        (str(guild_id), str(user_id), "0", seconds_delta)
+                    )
+                return max(0, seconds_delta)
+            
+            # Calcula total atual
+            total_current = sum(int(row[1]) for row in rows)
+            
+            # Se for remover e o total for menor que o delta negativo, zera tudo
+            if seconds_delta < 0 and abs(seconds_delta) >= total_current:
+                # Zera todos os canais
+                await cur.execute(
+                    """
+                    DELETE FROM voice_stats
+                    WHERE guild_id = ? AND user_id = ?
+                    """,
+                    (str(guild_id), str(user_id))
+                )
+                await self._conn.commit()
+                return 0
+            
+            # Distribui proporcionalmente entre os canais
+            new_total = total_current + seconds_delta
+            if new_total < 0:
+                new_total = 0
+            
+            # Calcula proporção para cada canal
+            for row in rows:
+                channel_id = row[0]
+                current_seconds = int(row[1])
+                
+                if total_current > 0:
+                    # Proporção do canal no total
+                    proportion = current_seconds / total_current
+                    new_seconds = int(new_total * proportion)
+                else:
+                    # Se total é 0, distribui igualmente
+                    new_seconds = int(new_total / len(rows)) if rows else 0
+                
+                # Garante que não fique negativo
+                new_seconds = max(0, new_seconds)
+                
+                await cur.execute(
+                    """
+                    UPDATE voice_stats
+                    SET total_seconds = ?
+                    WHERE guild_id = ? AND user_id = ? AND channel_id = ?
+                    """,
+                    (new_seconds, str(guild_id), str(user_id), channel_id)
+                )
+            
+            # Remove canais que ficaram com 0 segundos
+            await cur.execute(
+                """
+                DELETE FROM voice_stats
+                WHERE guild_id = ? AND user_id = ? AND total_seconds = 0
+                """,
+                (str(guild_id), str(user_id))
+            )
+            
+        await self._conn.commit()
+        
+        # Retorna novo total
+        return await self.get_total_voice_time(guild_id, user_id)
+    
     async def get_voice_ranking(self, guild_id: int, limit: int = 10) -> Tuple[Dict[str, Any], ...]:
         """Retorna ranking de tempo total por usuário."""
         if not self._conn:
@@ -2347,6 +2489,21 @@ class Database:
             )
         await self._conn.commit()
     
+    async def clear_naval_stats(self, guild_id: int) -> None:
+        """Zera todas as estatísticas de Batalha Naval de um servidor."""
+        if not self._conn:
+            raise RuntimeError("Database não inicializado. Chame initialize() primeiro.")
+        
+        async with self._conn.cursor() as cur:
+            await cur.execute(
+                """
+                DELETE FROM naval_stats
+                WHERE guild_id = ?
+                """,
+                (str(guild_id),),
+            )
+        await self._conn.commit()
+    
     async def get_naval_ranking(self, guild_id: int, limit: int = 10) -> Tuple[Dict[str, Any], ...]:
         """Retorna ranking de jogadores por pontos."""
         if not self._conn:
@@ -2442,6 +2599,152 @@ class Database:
             rows = await cur.fetchall()
             return tuple(dict(row) for row in rows)
     
+    # ===== MÉTODOS DE MEMBER LOGS E POINTS =====
+    
+    async def add_member_log(
+        self,
+        guild_id: int,
+        target_id: int,
+        author_id: int,
+        log_type: str,
+        content: Optional[str] = None,
+        points_delta: Optional[int] = None
+    ) -> None:
+        """Adiciona um log de membro (comentário, ADV, moderação, etc.)."""
+        if not self._conn:
+            raise RuntimeError("Database não inicializado. Chame initialize() primeiro.")
+        
+        async with self._conn.cursor() as cur:
+            await cur.execute(
+                """
+                INSERT INTO member_logs (guild_id, target_id, author_id, type, content, points_delta)
+                VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                (str(guild_id), str(target_id), str(author_id), log_type, content, points_delta)
+            )
+        await self._conn.commit()
+    
+    async def get_member_logs(
+        self,
+        guild_id: int,
+        target_id: int,
+        limit: int = 100,
+        offset: int = 0,
+        log_type: Optional[str] = None
+    ) -> Tuple[Dict[str, Any], ...]:
+        """Busca logs de um membro com paginação."""
+        if not self._conn:
+            raise RuntimeError("Database não inicializado. Chame initialize() primeiro.")
+        
+        async with self._conn.cursor() as cur:
+            if log_type:
+                await cur.execute(
+                    """
+                    SELECT * FROM member_logs
+                    WHERE guild_id = ? AND target_id = ? AND type = ?
+                    ORDER BY timestamp DESC
+                    LIMIT ? OFFSET ?
+                    """,
+                    (str(guild_id), str(target_id), log_type, limit, offset)
+                )
+            else:
+                await cur.execute(
+                    """
+                    SELECT * FROM member_logs
+                    WHERE guild_id = ? AND target_id = ?
+                    ORDER BY timestamp DESC
+                    LIMIT ? OFFSET ?
+                    """,
+                    (str(guild_id), str(target_id), limit, offset)
+                )
+            rows = await cur.fetchall()
+            return tuple(dict(row) for row in rows)
+    
+    async def count_member_logs(
+        self,
+        guild_id: int,
+        target_id: int,
+        log_type: Optional[str] = None
+    ) -> int:
+        """Conta total de logs de um membro."""
+        if not self._conn:
+            raise RuntimeError("Database não inicializado. Chame initialize() primeiro.")
+        
+        async with self._conn.cursor() as cur:
+            if log_type:
+                await cur.execute(
+                    """
+                    SELECT COUNT(*) FROM member_logs
+                    WHERE guild_id = ? AND target_id = ? AND type = ?
+                    """,
+                    (str(guild_id), str(target_id), log_type)
+                )
+            else:
+                await cur.execute(
+                    """
+                    SELECT COUNT(*) FROM member_logs
+                    WHERE guild_id = ? AND target_id = ?
+                    """,
+                    (str(guild_id), str(target_id))
+                )
+            row = await cur.fetchone()
+            return row[0] if row else 0
+    
+    async def get_member_points(self, guild_id: int, user_id: int) -> int:
+        """Retorna pontos atuais de um membro (0 se não existir)."""
+        if not self._conn:
+            raise RuntimeError("Database não inicializado. Chame initialize() primeiro.")
+        
+        async with self._conn.cursor() as cur:
+            await cur.execute(
+                """
+                SELECT total_points FROM member_points
+                WHERE guild_id = ? AND user_id = ?
+                """,
+                (str(guild_id), str(user_id))
+            )
+            row = await cur.fetchone()
+            return row[0] if row else 0
+    
+    async def update_member_points(self, guild_id: int, user_id: int, delta: int) -> int:
+        """Atualiza pontos de um membro (delta pode ser positivo ou negativo). Retorna novo total."""
+        if not self._conn:
+            raise RuntimeError("Database não inicializado. Chame initialize() primeiro.")
+        
+        async with self._conn.cursor() as cur:
+            # Insere ou atualiza
+            await cur.execute(
+                """
+                INSERT INTO member_points (user_id, guild_id, total_points, last_update)
+                VALUES (?, ?, ?, CURRENT_TIMESTAMP)
+                ON CONFLICT(user_id, guild_id) DO UPDATE SET
+                    total_points = total_points + ?,
+                    last_update = CURRENT_TIMESTAMP
+                """,
+                (str(user_id), str(guild_id), delta, delta)
+            )
+            # Busca novo total
+            await cur.execute(
+                """
+                SELECT total_points FROM member_points
+                WHERE guild_id = ? AND user_id = ?
+                """,
+                (str(guild_id), str(user_id))
+            )
+            row = await cur.fetchone()
+        await self._conn.commit()
+        return row[0] if row else 0
+    
+    async def get_member_adv_count(self, guild_id: int, user_id: int) -> int:
+        """Conta quantas advertências (ADV1 + ADV2) um membro tem baseado nos cargos.
+        
+        Nota: Este método não acessa o banco, mas sim verifica os cargos do membro.
+        Deve ser chamado com um objeto Member do Discord.
+        """
+        # Este método será implementado no FichaCog onde temos acesso ao Member
+        # Retornamos 0 aqui como placeholder
+        return 0
+
     async def close(self) -> None:
         """Fecha a conexão com o banco de dados."""
         if self._conn:

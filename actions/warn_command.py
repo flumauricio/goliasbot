@@ -145,3 +145,9 @@ class WarnCog(commands.Cog):
         await ctx.reply(f"{action} para {member.mention}.")
 
 
+async def setup(bot):
+    """Função de setup para carregamento da extensão."""
+    from config_manager import ConfigManager
+    from db import Database
+    
+    await bot.add_cog(WarnCog(bot, bot.db, bot.config_manager))

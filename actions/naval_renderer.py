@@ -4,7 +4,7 @@ import logging
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
-from PIL import Image
+from PIL import Image, ImageDraw, ImageFont
 
 # Importa REQUIRED_SHIPS para obter tamanhos
 from actions.naval_combat import REQUIRED_SHIPS
@@ -34,6 +34,8 @@ class NavalRenderer:
         self._hit_icon: Optional[Image.Image] = None
         self._miss_icon: Optional[Image.Image] = None
         self._ship_images: Dict[str, Image.Image] = {}
+        self._acerto_image: Optional[Image.Image] = None
+        self._erro_image: Optional[Image.Image] = None
         self._loaded = False
     
     def _load_assets(self) -> None:
@@ -79,8 +81,20 @@ class NavalRenderer:
                 else:
                     LOGGER.warning(f"{ship_name}.png não encontrado")
             
+            # Carrega imagens de feedback (acerto e erro)
+            acerto_path = self.assets_path / "acerto.jpg"
+            if acerto_path.exists():
+                self._acerto_image = Image.open(acerto_path).convert("RGB")
+            else:
+                LOGGER.warning("acerto.jpg não encontrado")
+            
+            erro_path = self.assets_path / "erro.jpg"
+            if erro_path.exists():
+                self._erro_image = Image.open(erro_path).convert("RGB")
+            else:
+                LOGGER.warning("erro.jpg não encontrado")
+            
             self._loaded = True
-            LOGGER.info("Assets de Batalha Naval carregados com sucesso")
         
         except Exception as exc:
             LOGGER.error("Erro ao carregar assets: %s", exc, exc_info=True)
@@ -231,10 +245,16 @@ class NavalRenderer:
     def render_public_board(
         self,
         shots: List[Dict[str, any]],
+        show_transition: bool = False,
+        player_name: Optional[str] = None,
     ) -> io.BytesIO:
         """Renderiza visão pública: apenas mar + ícones hit/miss (SEM navios)."""
         if not self._loaded:
             self._load_assets()
+        
+        # Se deve mostrar transição, renderiza a imagem de transição
+        if show_transition and player_name:
+            return self.render_turn_transition(player_name)
         
         # Cria cópia do tabuleiro base (sem navios)
         board = self._board_image.copy()
@@ -261,6 +281,21 @@ class NavalRenderer:
         # Converte para BytesIO
         output = io.BytesIO()
         board.save(output, format="PNG")
+        output.seek(0)
+        return output
+    
+    def render_feedback_image(self, is_hit: bool) -> Optional[io.BytesIO]:
+        """Renderiza imagem de feedback (acerto ou erro)."""
+        if not self._loaded:
+            self._load_assets()
+        
+        image = self._acerto_image if is_hit else self._erro_image
+        if not image:
+            return None
+        
+        # Retorna cópia da imagem como BytesIO
+        output = io.BytesIO()
+        image.save(output, format="JPEG")
         output.seek(0)
         return output
     
@@ -308,3 +343,66 @@ class NavalRenderer:
         
         except (ValueError, ZeroDivisionError):
             return False
+    
+    def render_turn_transition(self, player_name: str) -> io.BytesIO:
+        """Renderiza imagem intermediária informando o próximo jogador."""
+        if not self._loaded:
+            self._load_assets()
+        
+        # Cria imagem baseada no tabuleiro (fundo)
+        board = self._board_image.copy()
+        
+        # Cria uma camada semi-transparente escura
+        overlay = Image.new('RGBA', BOARD_SIZE, (0, 0, 0, 200))
+        board = Image.alpha_composite(board.convert('RGBA'), overlay).convert('RGB')
+        
+        # Cria contexto de desenho
+        draw = ImageDraw.Draw(board)
+        
+        # Tenta carregar fonte, se não conseguir usa padrão
+        try:
+            # Tenta usar fonte padrão do sistema
+            font_large = ImageFont.truetype("arial.ttf", 72)
+            font_medium = ImageFont.truetype("arial.ttf", 48)
+        except:
+            try:
+                font_large = ImageFont.truetype("C:/Windows/Fonts/arial.ttf", 72)
+                font_medium = ImageFont.truetype("C:/Windows/Fonts/arial.ttf", 48)
+            except:
+                # Fallback para fonte padrão
+                font_large = ImageFont.load_default()
+                font_medium = ImageFont.load_default()
+        
+        # Texto principal
+        main_text = "⚓ É A SUA VEZ!"
+        sub_text = f"Jogador: {player_name}"
+        
+        # Calcula posição central
+        bbox_main = draw.textbbox((0, 0), main_text, font=font_large)
+        text_width_main = bbox_main[2] - bbox_main[0]
+        text_height_main = bbox_main[3] - bbox_main[1]
+        
+        bbox_sub = draw.textbbox((0, 0), sub_text, font=font_medium)
+        text_width_sub = bbox_sub[2] - bbox_sub[0]
+        text_height_sub = bbox_sub[3] - bbox_sub[1]
+        
+        # Posição central
+        x_main = (BOARD_SIZE[0] - text_width_main) // 2
+        y_main = BOARD_SIZE[1] // 2 - text_height_main - 20
+        
+        x_sub = (BOARD_SIZE[0] - text_width_sub) // 2
+        y_sub = BOARD_SIZE[1] // 2 + 20
+        
+        # Desenha texto com sombra (para melhor legibilidade)
+        shadow_offset = 3
+        draw.text((x_main + shadow_offset, y_main + shadow_offset), main_text, font=font_large, fill=(0, 0, 0, 255))
+        draw.text((x_main, y_main), main_text, font=font_large, fill=(255, 255, 255, 255))
+        
+        draw.text((x_sub + shadow_offset, y_sub + shadow_offset), sub_text, font=font_medium, fill=(0, 0, 0, 255))
+        draw.text((x_sub, y_sub), sub_text, font=font_medium, fill=(200, 200, 255, 255))
+        
+        # Converte para BytesIO
+        output = io.BytesIO()
+        board.save(output, format="PNG")
+        output.seek(0)
+        return output

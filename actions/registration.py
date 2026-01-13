@@ -395,8 +395,9 @@ class RegistrationCog(commands.Cog):
 
     @commands.Cog.listener()
     async def on_member_remove(self, member: discord.Member):
+        """Monitora saídas de membros e envia relatório completo."""
         guild = member.guild
-        channels, _, _ = await _get_settings(self.db, guild.id)
+        channels, roles, _ = await _get_settings(self.db, guild.id)
         
         # Remove mapeamento server_id do banco quando membro sai
         try:
@@ -411,33 +412,150 @@ class RegistrationCog(commands.Cog):
         if not channel or not isinstance(channel, discord.TextChannel):
             return
 
+        # Constrói embed completo
         embed = discord.Embed(
-            title="🚪 Membro saiu do servidor",
-            description=f"{member.mention} deixou o servidor.",
+            title="🚪 Relatório de Saída de Membro",
+            description=f"{member.mention} (`{member.id}`) deixou o servidor.",
             color=discord.Color.red(),
+            timestamp=discord.utils.utcnow()
         )
         embed.set_thumbnail(url=member.display_avatar.url)
-        embed.add_field(name="ID do usuário", value=str(member.id), inline=True)
+        
+        # Informações básicas
         embed.add_field(
-            name="Conta criada",
-            value=discord.utils.format_dt(member.created_at, style="R"),
-            inline=True,
+            name="👤 Informações Básicas",
+            value=(
+                f"**Nome:** {member.display_name}\n"
+                f"**Conta criada:** {discord.utils.format_dt(member.created_at, style='R')}\n"
+                f"**Entrou no servidor:** {discord.utils.format_dt(member.joined_at, style='R') if member.joined_at else 'Desconhecido'}"
+            ),
+            inline=False
         )
-        if member.joined_at:
-            embed.add_field(
-                name="Entrou no servidor",
-                value=discord.utils.format_dt(member.joined_at, style="R"),
-                inline=True,
-            )
-
+        
+        # Cargos
         if member.roles:
             role_names = [r.name for r in member.roles if not r.is_default()]
             if role_names:
                 embed.add_field(
-                    name="Cargos que possuía",
+                    name="🎭 Cargos",
                     value=", ".join(role_names)[:1000],
                     inline=False,
                 )
-
+        
+        # Dados de cadastro
+        try:
+            registration_data = await self.db.get_user_registration(guild.id, member.id, status="approved")
+            if registration_data:
+                server_id = registration_data.get("server_id", "")
+                recruiter_id = registration_data.get("recruiter_id", "")
+                
+                registration_info = []
+                if server_id:
+                    registration_info.append(f"**ID no servidor:** {server_id}")
+                if recruiter_id:
+                    try:
+                        recruiter = guild.get_member(int(recruiter_id))
+                        if recruiter:
+                            registration_info.append(f"**Recrutador:** {recruiter.display_name}")
+                        else:
+                            registration_info.append(f"**Recrutador ID:** {recruiter_id}")
+                    except (ValueError, TypeError):
+                        pass
+                
+                if registration_info:
+                    embed.add_field(
+                        name="📝 Dados de Cadastro",
+                        value="\n".join(registration_info),
+                        inline=True
+                    )
+        except Exception as exc:
+            LOGGER.warning("Erro ao buscar dados de cadastro de %s: %s", member.id, exc)
+        
+        # Tempo de voz
+        try:
+            from .voice_utils import format_time
+            total_seconds = await self.db.get_total_voice_time(guild.id, member.id)
+            if total_seconds > 0:
+                time_str = format_time(total_seconds)
+                embed.add_field(
+                    name="⏱️ Tempo em Call",
+                    value=time_str,
+                    inline=True
+                )
+        except Exception as exc:
+            LOGGER.warning("Erro ao buscar tempo de voz de %s: %s", member.id, exc)
+        
+        # Histórico de ações
+        try:
+            stats = await self.db.get_user_stats(guild.id, member.id)
+            if stats:
+                participations = stats.get("participations", 0)
+                total_earned = stats.get("total_earned", 0.0)
+                if participations > 0 or total_earned > 0:
+                    embed.add_field(
+                        name="📊 Histórico de Ações",
+                        value=(
+                            f"**Participações:** {participations}\n"
+                            f"**Total ganho:** R$ {total_earned:,.2f}"
+                        ),
+                        inline=True
+                    )
+        except Exception as exc:
+            LOGGER.warning("Erro ao buscar estatísticas de ações de %s: %s", member.id, exc)
+        
+        # Advertências
+        try:
+            role_adv1_id = roles.get("adv1") or roles.get("role_adv1")
+            role_adv2_id = roles.get("adv2") or roles.get("role_adv2")
+            
+            adv_count = 0
+            if role_adv1_id:
+                role_adv1 = guild.get_role(int(role_adv1_id))
+                if role_adv1 and role_adv1 in member.roles:
+                    adv_count = 1
+            if role_adv2_id:
+                role_adv2 = guild.get_role(int(role_adv2_id))
+                if role_adv2 and role_adv2 in member.roles:
+                    adv_count = 2
+            
+            if adv_count > 0:
+                embed.add_field(
+                    name="⚠️ Advertências",
+                    value=f"ADV {adv_count}",
+                    inline=True
+                )
+        except Exception as exc:
+            LOGGER.warning("Erro ao verificar advertências de %s: %s", member.id, exc)
+        
+        # Logs recentes (últimos 3)
+        try:
+            logs = await self.db.get_member_logs(guild.id, member.id, limit=3)
+            if logs:
+                from datetime import datetime
+                logs_text = []
+                for log in logs:
+                    log_type = log.get("type", "unknown")
+                    content = log.get("content", "")[:50]
+                    timestamp = log.get("timestamp", "")
+                    logs_text.append(f"• {log_type}: {content}...")
+                
+                if logs_text:
+                    embed.add_field(
+                        name="📝 Últimos Registros",
+                        value="\n".join(logs_text),
+                        inline=False
+                    )
+        except Exception as exc:
+            LOGGER.warning("Erro ao buscar logs de %s: %s", member.id, exc)
+        
+        embed.set_footer(text=f"ID: {member.id} • Relatório de Saída")
+        
         await channel.send(embed=embed)
 
+
+async def setup(bot):
+    """Função de setup para carregamento da extensão."""
+    from config_manager import ConfigManager
+    from db import Database
+    
+    await bot.add_cog(RegistrationCog(bot, bot.db, bot.config_manager))

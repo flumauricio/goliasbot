@@ -1,3 +1,4 @@
+import asyncio
 import logging
 from typing import Optional, Dict, Callable, Any
 
@@ -14,6 +15,109 @@ from .permissions_config import PermissionsView
 
 LOGGER = logging.getLogger(__name__)
 
+# Usa o set global do bot para prevenir execução duplicada
+
+
+class BackButton(discord.ui.Button):
+    """Botão para voltar ao dashboard principal."""
+    
+    def __init__(self, parent_view):
+        super().__init__(label="⬅️ Voltar", style=discord.ButtonStyle.secondary, row=4)
+        self.parent_view = parent_view
+    
+    async def callback(self, interaction: discord.Interaction):
+        embed = await self.parent_view.build_embed()
+        await interaction.response.edit_message(embed=embed, view=self.parent_view)
+
+
+class NavalSetupView(discord.ui.View):
+    """View para configurar o sistema de Batalha Naval."""
+    
+    def __init__(self, bot: commands.Bot, db: Database, guild: discord.Guild, parent_view=None):
+        super().__init__(timeout=300)
+        self.bot = bot
+        self.db = db
+        self.guild = guild
+        self.parent_view = parent_view
+        
+        # Adiciona botão voltar se parent_view existir
+        if self.parent_view:
+            self.add_item(BackButton(self.parent_view))
+        
+        # ChannelSelect para Canal de Batalha Naval
+        self.naval_channel_select = discord.ui.ChannelSelect(
+            placeholder="Selecione o canal para partidas de Batalha Naval...",
+            channel_types=[discord.ChannelType.text],
+            min_values=0,
+            max_values=1,
+            row=0
+        )
+        self.naval_channel_select.callback = self.on_naval_channel_select
+        self.add_item(self.naval_channel_select)
+    
+    async def build_embed(self) -> discord.Embed:
+        """Constrói a embed com as configurações atuais."""
+        settings = await self.db.get_settings(self.guild.id)
+        
+        embed = discord.Embed(
+            title="⚓ Configuração do Sistema de Batalha Naval",
+            description="Configure o canal onde as partidas de Batalha Naval serão criadas.",
+            color=discord.Color.blue()
+        )
+        
+        # Canal de Batalha Naval
+        channel_naval_id = settings.get("channel_naval")
+        if channel_naval_id:
+            channel = self.guild.get_channel(int(channel_naval_id))
+            if channel:
+                channel_text = f"{channel.mention} (`{channel.id}`)"
+            else:
+                channel_text = f"`{channel_naval_id}` (canal não encontrado)"
+        else:
+            channel_text = "❌ Não configurado"
+        
+        embed.add_field(
+            name="📢 Canal de Batalha Naval",
+            value=channel_text,
+            inline=False
+        )
+        
+        embed.set_footer(text="Selecione um canal abaixo para configurar")
+        
+        return embed
+    
+    async def on_naval_channel_select(self, interaction: discord.Interaction):
+        """Callback quando um canal é selecionado."""
+        await interaction.response.defer(ephemeral=True)
+        
+        selected_channels = interaction.data.get("values", [])
+        if not selected_channels:
+            await interaction.followup.send("❌ Nenhum canal selecionado.", ephemeral=True)
+            return
+        
+        channel_id = int(selected_channels[0])
+        channel = self.guild.get_channel(channel_id)
+        
+        if not channel:
+            await interaction.followup.send("❌ Canal não encontrado.", ephemeral=True)
+            return
+        
+        # Salva a configuração
+        await self.db.upsert_settings(self.guild.id, channel_naval=channel.id)
+        
+        # Atualiza a embed
+        embed = await self.build_embed()
+        await interaction.followup.send(
+            f"✅ Canal de Batalha Naval configurado: {channel.mention}",
+            ephemeral=True
+        )
+        
+        # Atualiza a mensagem principal
+        try:
+            await interaction.message.edit(embed=embed, view=self)
+        except discord.NotFound:
+            pass
+
 
 # Configuração modular de módulos
 MODULE_CONFIGS: Dict[str, Dict[str, Any]] = {
@@ -23,7 +127,7 @@ MODULE_CONFIGS: Dict[str, Dict[str, Any]] = {
         "check_configured": "tickets",
     },
     "registration": {
-        "name": "📝 Cadastro",
+        "name": "📝 Geral",
         "view_class": RegistrationConfigView,
         "check_configured": "registration",
     },
@@ -41,6 +145,11 @@ MODULE_CONFIGS: Dict[str, Dict[str, Any]] = {
         "name": "⚙️ Permissões",
         "view_class": PermissionsView,
         "check_configured": "permissions",
+    },
+    "naval": {
+        "name": "⚓ Batalha Naval",
+        "view_class": NavalSetupView,
+        "check_configured": "naval",
     },
 }
 
@@ -70,6 +179,12 @@ async def _check_voice_configured(db: Database, guild_id: int) -> bool:
     settings = await db.get_voice_settings(guild_id)
     monitor_all = settings.get("monitor_all", 0) == 1
     return bool(allowed_roles and (monitor_all or monitored_channels))
+
+
+async def _check_naval_configured(db: Database, guild_id: int) -> bool:
+    """Verifica se o sistema de Batalha Naval está configurado."""
+    settings = await db.get_settings(guild_id)
+    return bool(settings.get("channel_naval"))
 
 
 class MainDashboardView(discord.ui.View):
@@ -112,6 +227,8 @@ class MainDashboardView(discord.ui.View):
                 is_configured = await _check_actions_configured(self.db, self.guild.id)
             elif check_func_name == "voice_points":
                 is_configured = await _check_voice_configured(self.db, self.guild.id)
+            elif check_func_name == "naval":
+                is_configured = await _check_naval_configured(self.db, self.guild.id)
             else:  # permissions
                 is_configured = True
             emoji = self.get_module_status_emoji(module_name, is_active, is_configured)
@@ -144,7 +261,7 @@ class MainDashboardView(discord.ui.View):
         embed = await view.update_embed()
         await interaction.response.edit_message(embed=embed, view=view)
     
-    @discord.ui.button(label="📝 Cadastro", style=discord.ButtonStyle.primary, row=0)
+    @discord.ui.button(label="📝 Geral", style=discord.ButtonStyle.primary, row=0)
     async def open_registration(self, interaction: discord.Interaction, button: discord.ui.Button):
         """Abre configuração de cadastro."""
         if not interaction.guild:
@@ -188,6 +305,17 @@ class MainDashboardView(discord.ui.View):
         view = PermissionsView(self.bot, self.db, interaction.guild, parent_view=self)
         embed = await view.build_embed()
         await interaction.response.edit_message(embed=embed, view=view)
+    
+    @discord.ui.button(label="⚓ Naval", style=discord.ButtonStyle.primary, row=1)
+    async def open_naval(self, interaction: discord.Interaction, button: discord.ui.Button):
+        """Abre configuração de Batalha Naval."""
+        if not interaction.guild:
+            await interaction.response.send_message("❌ Use este comando em um servidor.", ephemeral=True)
+            return
+        
+        view = NavalSetupView(self.bot, self.db, interaction.guild, parent_view=self)
+        embed = await view.build_embed()
+        await interaction.response.edit_message(embed=embed, view=view)
 
 
 class SetupCog(commands.Cog):
@@ -202,18 +330,53 @@ class SetupCog(commands.Cog):
     @commands.has_permissions(administrator=True)
     async def interactive_setup(self, ctx: commands.Context):
         """Abre o Dashboard Central de configuração do bot."""
-        guild = ctx.guild
-        if not guild:
-            await ctx.reply("❌ Use este comando em um servidor.")
-            return
+        # Verifica se já está sendo processado (prevenção de duplicação) - thread-safe
+        msg_id = ctx.message.id
+        with self.bot._processing_lock:
+            if msg_id in self.bot._processing_messages:
+                return
+            
+            # Marca como em processamento IMEDIATAMENTE (antes de qualquer await)
+            self.bot._processing_messages.add(msg_id)
         
-        view = MainDashboardView(self.bot, self.db, self.config, guild)
-        embed = await view.build_embed()
-        
-        await ctx.reply(embed=embed, view=view)
-        
-        # Deleta o comando após execução
         try:
-            await ctx.message.delete()
-        except:
-            pass
+            LOGGER.info("[TRACE] !setup RECEBIDO - Usuario: %s, Guild: %s, Msg_ID: %s, Channel: %s", 
+                        ctx.author.id, ctx.guild.id, ctx.message.id, ctx.channel.id)
+        
+            guild = ctx.guild
+            if not guild:
+                await ctx.send("❌ Use este comando em um servidor.")
+                return
+            
+            LOGGER.info("[EXEC] !setup INICIADO - Usuario: %s (ID: %s), Guild: %s (ID: %s)", 
+                        ctx.author.name, ctx.author.id, guild.name, guild.id)
+            
+            view = MainDashboardView(self.bot, self.db, self.config, guild)
+            embed = await view.build_embed()
+            
+            # Deleta o comando após execução
+            try:
+                await ctx.message.delete()
+            except discord.errors.HTTPException as e:
+                LOGGER.warning("Erro HTTP ao deletar mensagem: %s", e)
+            except Exception as e:
+                LOGGER.warning("Erro ao deletar mensagem do comando: %s", e)
+            
+            # Usa ctx.send ao invés de ctx.reply para evitar erro quando mensagem foi deletada
+            reply_msg = await ctx.send(embed=embed, view=view)
+            
+            LOGGER.info("[SUCCESS] Dashboard enviado (msg_id: %s) para %s", reply_msg.id, guild.name)
+            LOGGER.info("[FINALIZED] !setup concluído para %s", ctx.author.name)
+        finally:
+            # Remove do set de processamento após 2 segundos
+            await asyncio.sleep(2)
+            with self.bot._processing_lock:
+                self.bot._processing_messages.discard(msg_id)
+
+
+async def setup(bot):
+    """Função de setup para carregamento da extensão."""
+    from config_manager import ConfigManager
+    from db import Database
+    
+    await bot.add_cog(SetupCog(bot, bot.db, bot.config_manager))

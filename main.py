@@ -1,34 +1,10 @@
 import asyncio
 import logging
+import threading
 from pathlib import Path
 
 import discord
 from discord.ext import commands
-
-from actions import (
-    ApprovalView,
-    RegistrationCog,
-    RegistrationView,
-    SetCog,
-    SetupCog,
-    PurgeCog,
-    WarnCog,
-    FichaCog,
-    TicketCog,
-    TicketOpenView,
-    TicketControlView,
-    ActionConfigCog,
-    ActionCog,
-    ActionView,
-    InviteCog,
-    VoiceConfigCog,
-    VoiceMonitorCog,
-    VoiceCommandsCog,
-    NavalCog,
-)
-# IMPORTAR O NOVO COG
-from actions.server_manage import ServerManageCog 
-from actions.help_command import HelpCog 
 
 from config_manager import ConfigManager
 from db import Database
@@ -54,24 +30,40 @@ async def build_bot() -> commands.Bot:
 
     class RegistrationBot(commands.Bot):
         async def setup_hook(self) -> None:
-            await self.add_cog(SetupCog(self, db, config))
-            await self.add_cog(SetCog(self, db, config))
-            await self.add_cog(PurgeCog(self))
-            await self.add_cog(WarnCog(self, db, config))
-            await self.add_cog(RegistrationCog(self, db, config))
-            await self.add_cog(FichaCog(self, db))
-            await self.add_cog(TicketCog(self, db))
-            await self.add_cog(ActionConfigCog(self, db))
-            await self.add_cog(ActionCog(self, db))
+            # Inicializa variáveis de controle de processamento
+            self._processing_messages = set()
+            self._processing_lock = threading.Lock()
             
-            # ADICIONAR O NOVO COG AQUI
-            await self.add_cog(ServerManageCog(self))
-            await self.add_cog(HelpCog(self))
-            await self.add_cog(InviteCog(self))
-            await self.add_cog(VoiceConfigCog(self, db))
-            await self.add_cog(VoiceMonitorCog(self, db))
-            await self.add_cog(VoiceCommandsCog(self, db))
-            await self.add_cog(NavalCog(self, db))
+            # Lista de extensões a carregar
+            extensions = [
+                'actions.setup_command',
+                'actions.purge_command',
+                'actions.ficha_command',
+                'actions.set_command',
+                'actions.warn_command',
+                'actions.registration',
+                'actions.ticket_command',
+                'actions.action_config',
+                'actions.action_system',
+                'actions.server_manage',
+                'actions.help_command',
+                'actions.invite_command',
+                'actions.voice_config',
+                'actions.voice_monitor',
+                'actions.voice_commands',
+                'actions.naval_command',
+            ]
+            
+            for ext in extensions:
+                try:
+                    await self.load_extension(ext)
+                except Exception as e:
+                    LOGGER.error("❌ Erro ao carregar %s: %s", ext, e, exc_info=True)
+            
+            # Restaura views persistentes
+            from actions.registration import RegistrationView, ApprovalView
+            from actions.ticket_command import TicketOpenView, TicketControlView
+            from actions.action_system import ActionView
             
             self.add_view(RegistrationView(db, config))
             self.add_view(TicketOpenView(db))
@@ -80,8 +72,10 @@ async def build_bot() -> commands.Bot:
             await restore_ticket_views(self, db)
 
     bot = RegistrationBot(command_prefix="!", intents=intents)
-    bot.config_manager = config
+    
+    # Armazena referências para uso nas extensões (antes do setup_hook)
     bot.db = db
+    bot.config_manager = config
 
     @bot.event
     async def on_ready():
@@ -106,7 +100,7 @@ async def build_bot() -> commands.Bot:
         # MissingPermissions: usuário não tem permissão
         if isinstance(error, commands.MissingPermissions):
             missing = [perm.replace("_", " ").replace("guild", "servidor").title() for perm in error.missing_permissions]
-            await ctx.reply(
+            await ctx.send(
                 f"❌ Você não tem permissão para usar este comando.\n"
                 f"**Permissões necessárias:** {', '.join(missing)}",
                 delete_after=15
@@ -115,7 +109,7 @@ async def build_bot() -> commands.Bot:
         # BotMissingPermissions: bot não tem permissão
         elif isinstance(error, commands.BotMissingPermissions):
             missing = [perm.replace("_", " ").replace("guild", "servidor").title() for perm in error.missing_permissions]
-            await ctx.reply(
+            await ctx.send(
                 f"❌ Eu não tenho as permissões necessárias para executar este comando.\n"
                 f"**Permissões necessárias:** {', '.join(missing)}\n"
                 f"Por favor, verifique as permissões do bot no servidor.",
@@ -125,7 +119,7 @@ async def build_bot() -> commands.Bot:
         # MissingRequiredArgument: argumento obrigatório faltando
         elif isinstance(error, commands.MissingRequiredArgument):
             param_name = error.param.name if error.param else "argumento"
-            await ctx.reply(
+            await ctx.send(
                 f"❌ Faltando argumento obrigatório: `{param_name}`.\n"
                 f"💡 Use `!help {ctx.command.name}` para ver a sintaxe correta.",
                 delete_after=15
@@ -137,14 +131,14 @@ async def build_bot() -> commands.Bot:
         
         # CommandOnCooldown: comando em cooldown
         elif isinstance(error, commands.CommandOnCooldown):
-            await ctx.reply(
+            await ctx.send(
                 f"⏳ Este comando está em cooldown. Tente novamente em {error.retry_after:.1f} segundos.",
                 delete_after=5
             )
         
         # BadArgument: argumento inválido
         elif isinstance(error, commands.BadArgument):
-            await ctx.reply(
+            await ctx.send(
                 f"❌ Argumento inválido: {str(error)}",
                 delete_after=10
             )
@@ -162,7 +156,7 @@ async def build_bot() -> commands.Bot:
                 error,
                 exc_info=error
             )
-            await ctx.reply(
+            await ctx.send(
                 "❌ Ocorreu um erro interno ao processar sua solicitação.\n"
                 "Por favor, tente novamente em alguns instantes. Se o problema persistir, entre em contato com um administrador.",
                 delete_after=15
@@ -176,7 +170,7 @@ async def build_bot() -> commands.Bot:
                 error,
                 exc_info=error
             )
-            await ctx.reply(
+            await ctx.send(
                 "❌ Ocorreu um erro ao executar este comando. Tente novamente ou verifique os logs.",
                 delete_after=10
             )
@@ -186,6 +180,7 @@ async def build_bot() -> commands.Bot:
 # --- Restante do arquivo (restore_pending_views e main) permanece igual ---
 async def restore_pending_views(bot: commands.Bot, db: Database, config: ConfigManager):
     """Restaura views de registros pendentes."""
+    from actions.registration import ApprovalView
     pending = await db.list_pending_registrations()
     for reg in pending:
         guild = bot.get_guild(int(reg["guild_id"]))
@@ -232,6 +227,7 @@ async def restore_action_views(bot: commands.Bot, db: Database):
                     
                     if channel:
                         try:
+                            from actions.action_system import ActionView
                             message = await channel.fetch_message(int(message_id))
                             view = ActionView(bot, db, action["id"])
                             bot.add_view(view, message_id=int(message_id))
@@ -292,6 +288,7 @@ async def restore_ticket_views(bot: commands.Bot, db: Database):
                 is_closed = False
                 
                 # Procura a mensagem com o embed do ticket
+                from actions.ticket_command import TicketControlView
                 async for msg in channel.history(limit=100):
                     if msg.embeds and msg.embeds[0].footer:
                         footer_text = str(msg.embeds[0].footer.text)
@@ -304,8 +301,6 @@ async def restore_ticket_views(bot: commands.Bot, db: Database):
             except Exception as exc:
                 LOGGER.warning("Falha ao restaurar view para ticket %s: %s", ticket.get("id"), exc)
         
-        if restored_count > 0:
-            LOGGER.info("Restauradas %d views de tickets abertos", restored_count)
     except Exception as exc:
         LOGGER.error("Erro ao restaurar views de tickets: %s", exc, exc_info=exc)
 

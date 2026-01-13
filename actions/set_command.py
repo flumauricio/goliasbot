@@ -89,3 +89,11 @@ class SetCog(commands.Cog):
         )
         
         await ctx.reply(f"✅ Painel de cadastro configurado com sucesso em {target_channel.mention}!")
+
+
+async def setup(bot):
+    """Função de setup para carregamento da extensão."""
+    from config_manager import ConfigManager
+    from db import Database
+    
+    await bot.add_cog(SetCog(bot, bot.db, bot.config_manager))

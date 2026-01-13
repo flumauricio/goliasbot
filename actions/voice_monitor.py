@@ -159,3 +159,10 @@ class VoiceMonitorCog(commands.Cog):
             elif not before_monitored and after_monitored:
                 # Saiu de não monitorado para monitorado: inicia nova
                 await self._start_session(user_id, guild_id, after_channel_id)
+
+
+async def setup(bot):
+    """Função de setup para carregamento da extensão."""
+    from db import Database
+    
+    await bot.add_cog(VoiceMonitorCog(bot, bot.db))

@@ -56,3 +56,8 @@ class InviteCog(commands.Cog):
             await ctx.message.delete()
         except:
             pass
+
+
+async def setup(bot):
+    """Função de setup para carregamento da extensão."""
+    await bot.add_cog(InviteCog(bot))

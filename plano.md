@@ -155,6 +155,31 @@
 - ✅ **Erro de Sintaxe na linha 2007**: Separadas duas declarações que estavam na mesma linha (`raise RuntimeError` e `async with`)
 - ✅ **ValueError no ticket_command.py (row 0)**: Corrigido layout UI onde botões "➕ Criar" estavam tentando compartilhar linha 0 com `ChannelSelect` que ocupa linha inteira. Botões movidos para linha 4 com lógica dinâmica para respeitar limite de 5 componentes por linha. Apenas 1-2 botões "➕ Criar" são adicionados para evitar overflow
 - ✅ **AttributeError no voice_config.py**: Adicionado método `create_voice_channel` faltante na classe `VoiceChannelSelectView` com modal para criar novos canais de voz
+- ✅ **AttributeError em naval_config.py (arquivo inexistente)**: Removido arquivo de cache obsoleto `naval_config.cpython-312.pyc` que estava causando erro ao executar `!naval_setup`. O arquivo fonte `naval_config.py` havia sido removido em refatoração anterior, mas o bytecode permaneceu em cache
+
+#### Correção de Múltiplas Instâncias:
+- ✅ **Múltiplas instâncias do bot rodando**: Identificadas e encerradas 2+ instâncias rodando simultaneamente (terminais 10 e 11), causando comandos duplicados e rate limits. Solução: Encerrar todas as instâncias Python do .venv antes de iniciar nova instância
+- ✅ **Prevenção**: Sempre verificar terminais ativos antes de reiniciar o bot
+
+#### Correção de Sistema de Pontos na Ficha:
+- ✅ **Sistema de pontos convertido para tempo de voz**: Removido sistema de `member_points` separado, agora usa o sistema de `voice_stats` existente
+- ✅ **Modal de edição de tempo**: Criado `VoiceTimeModal` que aceita formatos como "2h 30m", "1h", "-30m", ou "0" para zerar
+- ✅ **Método `adjust_voice_time()`**: Implementado no `db.py` para ajustar tempo de voz distribuindo proporcionalmente entre canais
+- ✅ **Botão atualizado**: "⚡ Editar Ponto" → "⏱️ Editar Tempo"
+- ✅ **Logs atualizados**: Tipo "points" → "voice_time" com formatação de tempo legível
+- ✅ **Mensagem ephemeral removida**: Removida confirmação após aplicar advertência (atualização da ficha já é feedback suficiente)
+
+#### Sistema de Monitoramento de Saídas:
+- ✅ **Relatório completo de saída**: Expandido o relatório de saída de membros com informações detalhadas:
+  - Informações básicas (nome, conta criada, quando entrou)
+  - Cargos que possuía
+  - Dados de cadastro (ID no servidor, recrutador)
+  - Tempo total em call
+  - Histórico de ações (participações e total ganho)
+  - Advertências ativas
+  - Últimos 3 registros de logs
+- ✅ **Integração com setup**: Sistema já estava integrado ao `!setup` através do botão "Cadastro" → "Configurar Canais" → "Mais Canais"
+- ✅ **Monitoramento automático**: Todas as saídas de membros são monitoradas e relatório enviado automaticamente para canal configurado
 
 #### Pendências:
 - **Pendência**: `ServerManageCog` não está exportado no `actions/__init__.py` (precisa adicionar ao `__all__`).

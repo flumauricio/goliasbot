@@ -604,3 +604,10 @@ class VoiceConfigCog(commands.Cog):
             await ctx.message.delete()
         except:
             pass
+
+
+async def setup(bot):
+    """Função de setup para carregamento da extensão."""
+    from db import Database
+    
+    await bot.add_cog(VoiceConfigCog(bot, bot.db))

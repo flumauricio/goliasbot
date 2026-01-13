@@ -78,3 +78,119 @@
 - ✅ Mensagens de erro informativas com coordenadas possíveis
 - ✅ View persistente corrigida
 - ✅ Sistema pronto para testes
+
+## Sessão Atual - Correção de Cache Python
+
+### 4. Erro ao executar !naval_setup
+
+4.1. **AttributeError em naval_config.py (arquivo inexistente)**
+   - **Problema**: Erro `AttributeError: 'NoneType' object has no attribute 'user'` em `naval_config.py` linha 98
+   - **Causa**: Arquivo `naval_config.cpython-312.pyc` em cache referenciando código antigo que não existe mais
+   - **Diagnóstico**:
+     - O arquivo fonte `naval_config.py` foi removido/refatorado em versão anterior
+     - O bytecode compilado (.pyc) permaneceu no cache `__pycache__`
+     - Python carregou o bytecode antigo ao invés do código atual
+   - **Solução**:
+     - Deletado arquivo `actions/__pycache__/naval_config.cpython-312.pyc`
+     - Recomendado reiniciar o bot para limpar toda a memória em cache
+
+### Status Atual:
+- ✅ Cache obsoleto removido
+- ⏳ Requer reinício do bot para aplicar correção
+- 💡 Recomendação: Sempre limpar cache após refatorações grandes
+
+## Sessão Atual - Correção de Múltiplas Instâncias
+
+### 5. Comandos enviando múltiplas mensagens duplicadas
+
+5.1. **Problema de múltiplas instâncias do bot rodando**
+   - **Sintomas**:
+     - Comando `!setup` enviando várias embeds duplicadas
+     - Comando `!purge` enviando múltiplas mensagens de confirmação
+     - Todos os comandos executando várias vezes
+     - Rate limits do Discord (429 Too Many Requests)
+   
+   - **Causa Raiz**:
+     - Múltiplas instâncias do bot rodando simultaneamente (Terminal 10 e 11)
+     - Todas as instâncias conectadas com o mesmo token
+     - Cada instância processa TODOS os eventos/comandos do Discord
+     - Resultado: cada comando é executado N vezes (N = número de instâncias)
+   
+   - **Diagnóstico**:
+     - Terminal 10: Bot ativo desde 09:11:26 (3+ horas rodando)
+     - Terminal 11: Bot ativo desde 09:23:43
+     - Ambos conectados simultaneamente ao Discord Gateway
+   
+   - **Solução**:
+     - Encerradas TODAS as instâncias Python do ambiente virtual
+     - Comando PowerShell: `Get-Process python | Where-Object { $_.Path -like "*\.venv\*" } | Stop-Process -Force`
+     - Garantir que apenas UMA instância rode por vez
+   
+   - **Prevenção**:
+     - Sempre verificar terminais ativos antes de iniciar o bot
+     - Usar `Ctrl+C` para parar instância anterior antes de reiniciar
+     - Considerar adicionar verificação de instância única no código
+
+### Status Atual:
+- ✅ Todas as instâncias duplicadas encerradas
+- ✅ Cache Python limpo
+- ⏳ Pronto para iniciar UMA instância limpa do bot
+
+## Sessão Atual - Correção de Sistema de Pontos na Ficha
+
+### 6. Sistema de Pontos convertido para Tempo de Voz
+
+6.1. **Correção do sistema de "pontos" na ficha**
+   - **Problema**: O botão "Editar Ponto" na ficha estava usando um sistema de pontos separado (`member_points`), mas deveria trabalhar com o tempo de voz já existente no sistema
+   - **Solução**:
+     - Removida a seção "Pontos Atuais" da embed (já existe "Tempo Total em Call")
+     - Renomeado `PointsModal` para `VoiceTimeModal`
+     - Modal agora aceita tempo em formato legível: "2h 30m", "1h", "30m", "-1h", ou "0" para zerar
+     - Criado método `adjust_voice_time()` no `db.py` que:
+       - Distribui ajustes proporcionalmente entre canais existentes
+       - Permite zerar todo o tempo
+       - Cria entrada em canal padrão se não houver registros
+     - Atualizado botão de "⚡ Editar Ponto" para "⏱️ Editar Tempo"
+     - Logs agora usam tipo "voice_time" em vez de "points"
+     - Exibição de logs formatada com tempo legível (ex: "+2h 30m - Motivo")
+
+6.2. **Correção de mensagem ephemeral no canal errado**
+   - **Problema**: Mensagem de confirmação "ADV 2 aplicada com sucesso!" aparecendo no canal de batalha naval
+   - **Solução**: Removida mensagem de confirmação `followup.send` após aplicar advertência - a atualização da ficha já é feedback suficiente
+
+### Status Atual:
+- ✅ Sistema de pontos removido da ficha
+- ✅ Sistema de tempo de voz integrado na ficha
+- ✅ Modal de edição de tempo implementado com parser de formatos
+- ✅ Método `adjust_voice_time()` criado no banco de dados
+- ✅ Logs atualizados para usar "voice_time"
+- ✅ Mensagem ephemeral removida após aplicar advertência
+
+## Sessão Atual - Sistema de Monitoramento de Saídas
+
+### 7. Relatório completo de saída de membros
+
+7.1. **Melhoria do sistema de monitoramento de saídas**
+   - **Problema**: O relatório de saída era básico, mostrando apenas informações simples
+   - **Solução**:
+     - Relatório expandido com informações completas:
+       - Informações básicas (nome, conta criada, quando entrou)
+       - Cargos que possuía
+       - Dados de cadastro (ID no servidor, recrutador)
+       - Tempo total em call
+       - Histórico de ações (participações e total ganho)
+       - Advertências ativas
+       - Últimos 3 registros de logs
+     - Sistema já estava integrado ao `!setup` através do botão "Cadastro" → "Configurar Canais" → "Mais Canais"
+     - Canal de saída configurável via `ChannelConfigView2` no setup
+
+7.2. **Integração com setup existente**
+   - **Status**: O canal de saída já estava configurado no sistema
+   - **Localização**: `!setup` → `📝 Cadastro` → `Configurar Canais` → `📄 Mais Canais` → Seletor de "Canal de Saídas"
+   - **Funcionalidade**: Usuários podem configurar o canal diretamente pelo setup interativo
+
+### Status Atual:
+- ✅ Relatório de saída expandido com informações completas
+- ✅ Sistema integrado ao setup existente
+- ✅ Monitoramento automático de todas as saídas de membros
+- ✅ Relatório enviado automaticamente para canal configurado

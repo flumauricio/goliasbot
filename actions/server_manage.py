@@ -63,6 +63,6 @@ class ServerManageCog(commands.Cog):
         view = ServerManageView(self.bot, guilds)
         await ctx.reply(embed=embed, view=view)
 
-async def setup(bot: commands.Bot):
-    # Função para o bot carregar o Cog se você usar load_extension
-    pass
+async def setup(bot):
+    """Função de setup para carregamento da extensão."""
+    await bot.add_cog(ServerManageCog(bot))

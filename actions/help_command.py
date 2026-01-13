@@ -103,3 +103,7 @@ class HelpCog(commands.Cog):
         
         await ctx.reply(embed=embed)
 
+
+async def setup(bot):
+    """Função de setup para carregamento da extensão."""
+    await bot.add_cog(HelpCog(bot))

@@ -3219,3 +3219,10 @@ class TicketCog(commands.Cog):
         embed.set_footer(text="💼 Sistema de Tickets • Estatísticas em Tempo Real")
         
         await ctx.reply(embed=embed)
+
+
+async def setup(bot):
+    """Função de setup para carregamento da extensão."""
+    from db import Database
+    
+    await bot.add_cog(TicketCog(bot, bot.db))
