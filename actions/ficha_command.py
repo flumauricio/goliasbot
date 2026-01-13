@@ -1026,6 +1026,33 @@ class FichaCog(commands.Cog):
             LOGGER.warning("Erro ao buscar dados de cadastro: %s", exc)
             return None
 
+    def _generate_activity_thermometer(self, msg_count: int, max_or_avg_count: float) -> str:
+        """Gera barra de temperatura de atividade usando emojis de blocos.
+        
+        Args:
+            msg_count: Número de mensagens do usuário
+            max_or_avg_count: Média ou máximo de mensagens do servidor
+            
+        Returns:
+            String com 5 emojis representando nível de atividade
+        """
+        if max_or_avg_count == 0:
+            return "⬜⬜⬜⬜⬜"
+        
+        # Calcula percentil (limita a 100%)
+        percentil = min(100, (msg_count / max_or_avg_count) * 100)
+        
+        # Mapeia percentil para número de blocos verdes (0-5)
+        filled = int((percentil / 100) * 5)
+        filled = max(0, min(5, filled))  # Garante entre 0 e 5
+        
+        # Se filled == 0, usa vermelho no primeiro bloco
+        if filled == 0:
+            return "🟥⬜⬜⬜⬜"
+        
+        # Caso contrário, usa blocos verdes e cinzas
+        return "🟩" * filled + "⬜" * (5 - filled)
+
     async def _build_user_ficha_embed(
         self,
         guild: discord.Guild,
@@ -1224,6 +1251,55 @@ class FichaCog(commands.Cog):
                 name="⏱️ Tempo Total em Call",
                 value="0h 0min 0seg",
                 inline=True
+            )
+        
+        # ===== ESTATÍSTICAS DE ENGAJAMENTO =====
+        try:
+            analytics = await self.db.get_user_analytics(guild.id, member.id)
+            if analytics:
+                msg_count = analytics.get("msg_count", 0)
+                img_count = analytics.get("img_count", 0)
+                reactions_given = analytics.get("reactions_given", 0)
+                reactions_received = analytics.get("reactions_received", 0)
+                mentions_sent = analytics.get("mentions_sent", 0)
+                mentions_received = analytics.get("mentions_received", 0)
+                
+                # Buscar ranking
+                rank = await self.db.get_user_rank(guild.id, member.id)
+                rank_text = f"#{rank}" if rank else "N/A"
+                
+                # Buscar média do servidor para calcular temperatura
+                avg_messages = await self.db.get_server_avg_messages(guild.id)
+                if avg_messages == 0:
+                    avg_messages = 1  # Evita divisão por zero
+                
+                # Gerar barra de temperatura
+                thermometer = self._generate_activity_thermometer(msg_count, avg_messages)
+                
+                embed.add_field(
+                    name="📊 Estatísticas de Engajamento",
+                    value=(
+                        f"**Mensagens:** {msg_count:,}\n"
+                        f"**Imagens:** {img_count:,}\n"
+                        f"**Reações:** {reactions_given:,} dadas | {reactions_received:,} recebidas\n"
+                        f"**Menções:** {mentions_sent:,} enviadas | {mentions_received:,} recebidas\n"
+                        f"**Ranking:** {rank_text}º membro mais ativo\n"
+                        f"**Atividade:** {thermometer}"
+                    ),
+                    inline=False
+                )
+            else:
+                embed.add_field(
+                    name="📊 Estatísticas de Engajamento",
+                    value="Nenhum dado disponível ainda.",
+                    inline=False
+                )
+        except Exception as exc:
+            LOGGER.warning("Erro ao buscar analytics: %s", exc)
+            embed.add_field(
+                name="📊 Estatísticas de Engajamento",
+                value="Erro ao carregar dados.",
+                inline=False
             )
         
         # ===== ADVERTÊNCIAS =====

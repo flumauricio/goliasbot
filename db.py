@@ -78,6 +78,8 @@ class Database:
                 await cur.execute("ALTER TABLE settings ADD COLUMN role_adv2 TEXT")
             if "channel_naval" not in cols:
                 await cur.execute("ALTER TABLE settings ADD COLUMN channel_naval TEXT")
+            if "analytics_ignored_channels" not in cols:
+                await cur.execute("ALTER TABLE settings ADD COLUMN analytics_ignored_channels TEXT")
 
 
             # Permissões de comandos por guild
@@ -444,6 +446,32 @@ class Database:
                 """
             )
             
+            # Tabela para analytics de usuários (estatísticas de engajamento)
+            await cur.execute(
+                """
+                CREATE TABLE IF NOT EXISTS user_analytics (
+                    guild_id TEXT NOT NULL,
+                    user_id TEXT NOT NULL,
+                    msg_count INTEGER DEFAULT 0,
+                    img_count INTEGER DEFAULT 0,
+                    mentions_sent INTEGER DEFAULT 0,
+                    mentions_received INTEGER DEFAULT 0,
+                    reactions_given INTEGER DEFAULT 0,
+                    reactions_received INTEGER DEFAULT 0,
+                    rank_position INTEGER DEFAULT NULL,
+                    last_active TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    PRIMARY KEY (guild_id, user_id)
+                )
+                """
+            )
+            
+            await cur.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_user_analytics_ranking 
+                ON user_analytics(guild_id, msg_count DESC)
+                """
+            )
+            
             # Tabela para sistema de pontos de membros
             await cur.execute(
                 """
@@ -475,6 +503,7 @@ class Database:
         role_adv1: Optional[int] = None,
         role_adv2: Optional[int] = None,
         message_set_embed: Optional[int] = None,
+        analytics_ignored_channels: Optional[str] = None,
     ) -> None:
         if not self._conn:
             raise RuntimeError("Database não inicializado. Chame initialize() primeiro.")
@@ -492,6 +521,7 @@ class Database:
             "role_adv1": role_adv1,
             "role_adv2": role_adv2,
             "message_set_embed": message_set_embed,
+            "analytics_ignored_channels": analytics_ignored_channels,
         }
         existing = await self.get_settings(guild_id)
         merged = {**existing, **{k: v for k, v in data.items() if v is not None}}
@@ -512,8 +542,9 @@ class Database:
                 role_member,
                 role_adv1,
                 role_adv2,
-                message_set_embed
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                message_set_embed,
+                analytics_ignored_channels
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(guild_id) DO UPDATE SET
                 channel_registration_embed=excluded.channel_registration_embed,
                 channel_welcome=excluded.channel_welcome,
@@ -527,6 +558,7 @@ class Database:
                 role_adv1=excluded.role_adv1,
                 role_adv2=excluded.role_adv2,
                 message_set_embed=excluded.message_set_embed,
+                analytics_ignored_channels=excluded.analytics_ignored_channels,
                 updated_at=CURRENT_TIMESTAMP
             """,
             (
@@ -543,6 +575,7 @@ class Database:
                 str(merged.get("role_adv1")) if merged.get("role_adv1") else None,
                 str(merged.get("role_adv2")) if merged.get("role_adv2") else None,
                 str(merged.get("message_set_embed")) if merged.get("message_set_embed") else None,
+                merged.get("analytics_ignored_channels"),  # Já é string (JSON)
             ),
         )
         await self._conn.commit()
@@ -2744,6 +2777,237 @@ class Database:
         # Este método será implementado no FichaCog onde temos acesso ao Member
         # Retornamos 0 aqui como placeholder
         return 0
+
+    # ===== MÉTODOS DE USER ANALYTICS =====
+    
+    async def batch_upsert_user_analytics(self, updates_list: list) -> None:
+        """Salva múltiplas atualizações de analytics em lote usando transação.
+        
+        Args:
+            updates_list: Lista de dicts com formato:
+                {
+                    "guild_id": int,
+                    "user_id": int,
+                    "msg_count": int (delta),
+                    "img_count": int (delta),
+                    "mentions_sent": int (delta),
+                    "mentions_received": int (delta),
+                    "reactions_given": int (delta),
+                    "reactions_received": int (delta),
+                    "last_active": str (timestamp opcional)
+                }
+        """
+        if not self._conn:
+            raise RuntimeError("Database não inicializado. Chame initialize() primeiro.")
+        
+        if not updates_list:
+            return
+        
+        async with self._conn.cursor() as cur:
+            # Inicia transação
+            await cur.execute("BEGIN TRANSACTION")
+            
+            try:
+                for update in updates_list:
+                    guild_id = str(update["guild_id"])
+                    user_id = str(update["user_id"])
+                    
+                    # Busca dados existentes
+                    await cur.execute(
+                        """
+                        SELECT msg_count, img_count, mentions_sent, mentions_received,
+                               reactions_given, reactions_received, last_active
+                        FROM user_analytics
+                        WHERE guild_id = ? AND user_id = ?
+                        """,
+                        (guild_id, user_id)
+                    )
+                    existing = await cur.fetchone()
+                    
+                    if existing:
+                        # Atualiza valores existentes (soma deltas)
+                        msg_count = existing[0] + update.get("msg_count", 0)
+                        img_count = existing[1] + update.get("img_count", 0)
+                        mentions_sent = existing[2] + update.get("mentions_sent", 0)
+                        mentions_received = existing[3] + update.get("mentions_received", 0)
+                        reactions_given = existing[4] + update.get("reactions_given", 0)
+                        reactions_received = existing[5] + update.get("reactions_received", 0)
+                        last_active = update.get("last_active") or existing[6]
+                        
+                        # Garante valores não negativos
+                        msg_count = max(0, msg_count)
+                        img_count = max(0, img_count)
+                        mentions_sent = max(0, mentions_sent)
+                        mentions_received = max(0, mentions_received)
+                        reactions_given = max(0, reactions_given)
+                        reactions_received = max(0, reactions_received)
+                        
+                        await cur.execute(
+                            """
+                            UPDATE user_analytics
+                            SET msg_count = ?, img_count = ?, mentions_sent = ?,
+                                mentions_received = ?, reactions_given = ?,
+                                reactions_received = ?, last_active = ?
+                            WHERE guild_id = ? AND user_id = ?
+                            """,
+                            (msg_count, img_count, mentions_sent, mentions_received,
+                             reactions_given, reactions_received, last_active,
+                             guild_id, user_id)
+                        )
+                    else:
+                        # Insere novo registro
+                        msg_count = max(0, update.get("msg_count", 0))
+                        img_count = max(0, update.get("img_count", 0))
+                        mentions_sent = max(0, update.get("mentions_sent", 0))
+                        mentions_received = max(0, update.get("mentions_received", 0))
+                        reactions_given = max(0, update.get("reactions_given", 0))
+                        reactions_received = max(0, update.get("reactions_received", 0))
+                        last_active = update.get("last_active") or "CURRENT_TIMESTAMP"
+                        
+                        if last_active == "CURRENT_TIMESTAMP":
+                            await cur.execute(
+                                """
+                                INSERT INTO user_analytics (
+                                    guild_id, user_id, msg_count, img_count,
+                                    mentions_sent, mentions_received,
+                                    reactions_given, reactions_received, last_active
+                                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+                                """,
+                                (guild_id, user_id, msg_count, img_count,
+                                 mentions_sent, mentions_received,
+                                 reactions_given, reactions_received)
+                            )
+                        else:
+                            await cur.execute(
+                                """
+                                INSERT INTO user_analytics (
+                                    guild_id, user_id, msg_count, img_count,
+                                    mentions_sent, mentions_received,
+                                    reactions_given, reactions_received, last_active
+                                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                                """,
+                                (guild_id, user_id, msg_count, img_count,
+                                 mentions_sent, mentions_received,
+                                 reactions_given, reactions_received, last_active)
+                            )
+                
+                # Commit da transação
+                await cur.execute("COMMIT")
+            except Exception as e:
+                await cur.execute("ROLLBACK")
+                raise
+    
+    async def get_user_analytics(self, guild_id: int, user_id: int) -> Optional[Dict[str, Any]]:
+        """Busca dados de analytics de um usuário."""
+        if not self._conn:
+            raise RuntimeError("Database não inicializado. Chame initialize() primeiro.")
+        
+        async with self._conn.cursor() as cur:
+            await cur.execute(
+                """
+                SELECT * FROM user_analytics
+                WHERE guild_id = ? AND user_id = ?
+                """,
+                (str(guild_id), str(user_id))
+            )
+            row = await cur.fetchone()
+            return dict(row) if row else None
+    
+    async def get_top_users_by_messages(
+        self, guild_id: int, limit: int = 10, offset: int = 0
+    ) -> Tuple[Dict[str, Any], ...]:
+        """Retorna top N usuários por mensagens com paginação."""
+        if not self._conn:
+            raise RuntimeError("Database não inicializado. Chame initialize() primeiro.")
+        
+        async with self._conn.cursor() as cur:
+            await cur.execute(
+                """
+                SELECT * FROM user_analytics
+                WHERE guild_id = ?
+                ORDER BY msg_count DESC
+                LIMIT ? OFFSET ?
+                """,
+                (str(guild_id), limit, offset)
+            )
+            rows = await cur.fetchall()
+            return tuple(dict(row) for row in rows)
+    
+    async def get_server_avg_messages(self, guild_id: int) -> float:
+        """Retorna média de mensagens do servidor (para cálculo de temperatura)."""
+        if not self._conn:
+            raise RuntimeError("Database não inicializado. Chame initialize() primeiro.")
+        
+        async with self._conn.cursor() as cur:
+            await cur.execute(
+                """
+                SELECT AVG(msg_count) FROM user_analytics
+                WHERE guild_id = ? AND msg_count > 0
+                """,
+                (str(guild_id),)
+            )
+            row = await cur.fetchone()
+            return float(row[0]) if row and row[0] is not None else 0.0
+    
+    async def update_rankings(self, guild_id: int) -> None:
+        """Recalcula e atualiza rank_position para todos os usuários do servidor."""
+        if not self._conn:
+            raise RuntimeError("Database não inicializado. Chame initialize() primeiro.")
+        
+        async with self._conn.cursor() as cur:
+            # Usa ROW_NUMBER() para calcular ranking baseado em msg_count
+            await cur.execute(
+                """
+                UPDATE user_analytics
+                SET rank_position = (
+                    SELECT rank_pos FROM (
+                        SELECT user_id,
+                               ROW_NUMBER() OVER (ORDER BY msg_count DESC, last_active DESC) as rank_pos
+                        FROM user_analytics
+                        WHERE guild_id = ?
+                    ) ranked
+                    WHERE ranked.user_id = user_analytics.user_id
+                )
+                WHERE guild_id = ?
+                """,
+                (str(guild_id), str(guild_id))
+            )
+        await self._conn.commit()
+    
+    async def get_user_rank(self, guild_id: int, user_id: int) -> Optional[int]:
+        """Retorna posição no ranking (usa rank_position ou calcula se NULL)."""
+        if not self._conn:
+            raise RuntimeError("Database não inicializado. Chame initialize() primeiro.")
+        
+        async with self._conn.cursor() as cur:
+            # Primeiro tenta usar rank_position cacheado
+            await cur.execute(
+                """
+                SELECT rank_position FROM user_analytics
+                WHERE guild_id = ? AND user_id = ?
+                """,
+                (str(guild_id), str(user_id))
+            )
+            row = await cur.fetchone()
+            
+            if row and row[0] is not None:
+                return int(row[0])
+            
+            # Se não tiver cacheado, calcula na hora
+            await cur.execute(
+                """
+                SELECT COUNT(*) + 1 FROM user_analytics
+                WHERE guild_id = ? AND (
+                    msg_count > (SELECT msg_count FROM user_analytics WHERE guild_id = ? AND user_id = ?)
+                    OR (msg_count = (SELECT msg_count FROM user_analytics WHERE guild_id = ? AND user_id = ?)
+                        AND last_active > (SELECT last_active FROM user_analytics WHERE guild_id = ? AND user_id = ?))
+                )
+                """,
+                (str(guild_id), str(guild_id), str(user_id),
+                 str(guild_id), str(user_id), str(guild_id), str(user_id))
+            )
+            row = await cur.fetchone()
+            return int(row[0]) if row else None
 
     async def close(self) -> None:
         """Fecha a conexão com o banco de dados."""

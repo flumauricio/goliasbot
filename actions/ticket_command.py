@@ -3047,7 +3047,13 @@ class TicketCog(commands.Cog):
     @commands.command(name="ticket_setup")
     @commands.has_permissions(administrator=True)
     async def ticket_setup(self, ctx: commands.Context):
-        """Interface interativa para configurar o sistema de tickets."""
+        """Abre interface interativa para configurar o sistema de tickets (apenas administradores).
+
+Uso: !ticket_setup
+
+Exemplos:
+- !ticket_setup
+"""
         guild = ctx.guild
         if not guild:
             await ctx.reply("Este comando só funciona em servidores.")
@@ -3080,7 +3086,13 @@ class TicketCog(commands.Cog):
     @commands.command(name="ticket")
     @commands.has_permissions(administrator=True)
     async def create_ticket_panel(self, ctx: commands.Context):
-        """Cria o painel de tickets no canal configurado."""
+        """Cria o painel de tickets no canal configurado (apenas administradores).
+
+Uso: !ticket
+
+Exemplos:
+- !ticket
+"""
         guild = ctx.guild
         if not guild:
             await ctx.reply("Este comando só funciona em servidores.")
@@ -3179,7 +3191,13 @@ class TicketCog(commands.Cog):
     @commands.command(name="ticket_stats")
     @commands.has_permissions(administrator=True)
     async def ticket_stats(self, ctx: commands.Context):
-        """Exibe estatísticas de tickets do servidor."""
+        """Exibe estatísticas de tickets do servidor (apenas administradores).
+
+Uso: !ticket_stats
+
+Exemplos:
+- !ticket_stats
+"""
         guild = ctx.guild
         if not guild:
             await ctx.reply("Este comando só funciona em servidores.")

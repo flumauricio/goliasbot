@@ -11,6 +11,65 @@ class HelpCog(commands.Cog):
 
     def __init__(self, bot: commands.Bot):
         self.bot = bot
+    
+    def _parse_command_doc(self, docstring: str) -> dict:
+        """Extrai descrição, uso e exemplos de uma docstring.
+        
+        Args:
+            docstring: String com a docstring do comando
+            
+        Returns:
+            Dict com keys: "description", "usage", "examples"
+        """
+        if not docstring:
+            return {"description": "Sem descrição disponível", "usage": None, "examples": None}
+        
+        lines = docstring.strip().split("\n")
+        description = lines[0].strip() if lines else "Sem descrição disponível"
+        
+        usage = None
+        examples = []
+        in_usage_section = False
+        in_examples_section = False
+        
+        for line in lines[1:]:
+            line = line.strip()
+            if not line:
+                continue
+            
+            # Detecta seção "Uso:" ou "Sintaxe:"
+            if line.lower().startswith("uso:") or line.lower().startswith("sintaxe:"):
+                in_usage_section = True
+                in_examples_section = False
+                # Extrai o uso da mesma linha ou próxima
+                usage_text = line.split(":", 1)[1].strip() if ":" in line else ""
+                if usage_text:
+                    usage = usage_text
+                continue
+            
+            # Detecta seção "Exemplos:"
+            if line.lower().startswith("exemplos:"):
+                in_examples_section = True
+                in_usage_section = False
+                continue
+            
+            # Se está na seção de uso, continua coletando
+            if in_usage_section and not usage:
+                usage = line
+                continue
+            
+            # Se está na seção de exemplos, coleta exemplos
+            if in_examples_section:
+                # Remove marcadores de lista (-, *, etc)
+                example = line.lstrip("- *•").strip()
+                if example:
+                    examples.append(example)
+        
+        return {
+            "description": description,
+            "usage": usage,
+            "examples": examples if examples else None
+        }
 
     @commands.command(name="comandos")
     async def list_commands(self, ctx: commands.Context):
@@ -54,6 +113,15 @@ class HelpCog(commands.Cog):
             "RegistrationCog": "📋 Registros",
             "ServerManageCog": "🌐 Servidores",
             "HelpCog": "❓ Ajuda",
+            "FichaCog": "📋 Fichas",
+            "AnalyticsCog": "📊 Analytics",
+            "NavalCog": "⚓ Batalha Naval",
+            "VoiceCommandsCog": "🎤 Voz",
+            "VoiceConfigCog": "⚙️ Configuração de Voz",
+            "TicketCog": "🎫 Tickets",
+            "ActionCog": "🎯 Ações",
+            "ActionConfigCog": "⚙️ Configuração de Ações",
+            "InviteCog": "🔗 Convites",
         }
 
         # Adiciona comandos agrupados por cog
@@ -65,14 +133,27 @@ class HelpCog(commands.Cog):
                 prefix = ctx.prefix or "!"
                 name = f"`{prefix}{cmd.name}`"
                 
-                # Obtém a descrição do comando (docstring ou description)
-                doc = cmd.short_doc or cmd.description or cmd.help or "Sem descrição disponível"
+                # Obtém a docstring completa
+                full_doc = cmd.help or cmd.description or ""
+                if not full_doc and cmd.callback.__doc__:
+                    full_doc = cmd.callback.__doc__
                 
-                # Se a docstring tiver múltiplas linhas, pega apenas a primeira
-                if "\n" in doc:
-                    doc = doc.split("\n")[0].strip()
+                # Parse da docstring
+                parsed = self._parse_command_doc(full_doc)
                 
-                field_value += f"{name} - {doc}\n"
+                # Monta a linha do comando
+                cmd_line = f"{name} - {parsed['description']}\n"
+                
+                # Adiciona uso se disponível
+                if parsed['usage']:
+                    cmd_line += f"   📝 Uso: {parsed['usage']}\n"
+                
+                # Adiciona exemplo se disponível (apenas o primeiro)
+                if parsed['examples']:
+                    first_example = parsed['examples'][0]
+                    cmd_line += f"   💡 Exemplo: {first_example}\n"
+                
+                field_value += cmd_line
             
             if field_value:
                 # Usa nome amigável se disponível, senão remove "Cog" do nome
@@ -89,10 +170,28 @@ class HelpCog(commands.Cog):
             for cmd in sorted(uncategorized, key=lambda c: c.name):
                 prefix = ctx.prefix or "!"
                 name = f"`{prefix}{cmd.name}`"
-                doc = cmd.short_doc or cmd.description or cmd.help or "Sem descrição disponível"
-                if "\n" in doc:
-                    doc = doc.split("\n")[0].strip()
-                field_value += f"{name} - {doc}\n"
+                
+                # Obtém a docstring completa
+                full_doc = cmd.help or cmd.description or ""
+                if not full_doc and cmd.callback.__doc__:
+                    full_doc = cmd.callback.__doc__
+                
+                # Parse da docstring
+                parsed = self._parse_command_doc(full_doc)
+                
+                # Monta a linha do comando
+                cmd_line = f"{name} - {parsed['description']}\n"
+                
+                # Adiciona uso se disponível
+                if parsed['usage']:
+                    cmd_line += f"   📝 Uso: {parsed['usage']}\n"
+                
+                # Adiciona exemplo se disponível (apenas o primeiro)
+                if parsed['examples']:
+                    first_example = parsed['examples'][0]
+                    cmd_line += f"   💡 Exemplo: {first_example}\n"
+                
+                field_value += cmd_line
             embed.add_field(
                 name="Outros",
                 value=field_value.strip(),

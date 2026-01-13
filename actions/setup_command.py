@@ -329,7 +329,13 @@ class SetupCog(commands.Cog):
     @commands.command(name="setup")
     @commands.has_permissions(administrator=True)
     async def interactive_setup(self, ctx: commands.Context):
-        """Abre o Dashboard Central de configuração do bot."""
+        """Abre o Dashboard Central de configuração do bot (apenas administradores).
+
+Uso: !setup
+
+Exemplos:
+- !setup
+"""
         # Verifica se já está sendo processado (prevenção de duplicação) - thread-safe
         msg_id = ctx.message.id
         with self.bot._processing_lock:

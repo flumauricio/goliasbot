@@ -934,7 +934,13 @@ class ActionConfigCog(commands.Cog):
     
     @commands.command(name="acao_setup")
     async def action_setup(self, ctx: commands.Context):
-        """Configura o sistema de ações FiveM."""
+        """Abre interface de configuração do sistema de ações FiveM (apenas administradores).
+
+Uso: !acao_setup
+
+Exemplos:
+- !acao_setup
+"""
         if not ctx.guild:
             await ctx.reply("❌ Use este comando em um servidor.")
             return

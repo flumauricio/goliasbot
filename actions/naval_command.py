@@ -1139,9 +1139,13 @@ class NavalCog(commands.Cog):
     @commands.command(name="naval_challenge", aliases=["naval"])
     async def naval_challenge(self, ctx: commands.Context, opponent: discord.Member):
         """Desafia um jogador para uma partida de Batalha Naval.
-        
-        Uso: !naval @usuario ou !naval_challenge @usuario
-        """
+
+Uso: !naval @usuario ou !naval_challenge @usuario
+
+Exemplos:
+- !naval @Jogador
+- !naval_challenge @Amigo
+"""
         try:
             if opponent.id == ctx.author.id:
                 await ctx.reply("❌ Você não pode desafiar a si mesmo!", delete_after=10)
@@ -1174,7 +1178,13 @@ class NavalCog(commands.Cog):
     
     @commands.command(name="naval_queue")
     async def naval_queue(self, ctx: commands.Context):
-        """Entra ou sai da fila de matchmaking."""
+        """Entra ou sai da fila de matchmaking para Batalha Naval.
+
+Uso: !naval_queue
+
+Exemplos:
+- !naval_queue
+"""
         # Verifica se já tem partida ativa
         existing = await self.db.get_naval_game_by_players(ctx.guild.id, ctx.author.id)
         if existing:
@@ -1196,7 +1206,13 @@ class NavalCog(commands.Cog):
     
     @commands.command(name="naval_rank")
     async def naval_rank(self, ctx: commands.Context):
-        """Exibe o ranking de Batalha Naval do servidor."""
+        """Exibe o ranking dos top 10 jogadores de Batalha Naval do servidor.
+
+Uso: !naval_rank
+
+Exemplos:
+- !naval_rank
+"""
         ranking = await self.db.get_naval_ranking(ctx.guild.id, limit=10)
         
         if not ranking:
@@ -1234,7 +1250,13 @@ class NavalCog(commands.Cog):
     
     @commands.command(name="naval_stats")
     async def naval_stats(self, ctx: commands.Context):
-        """Exibe suas estatísticas de Batalha Naval."""
+        """Exibe suas estatísticas pessoais de Batalha Naval (pontos, vitórias, derrotas, etc).
+
+Uso: !naval_stats
+
+Exemplos:
+- !naval_stats
+"""
         stats = await self.db.get_naval_stats(ctx.guild.id, ctx.author.id)
         
         if not stats:
@@ -1265,11 +1287,14 @@ class NavalCog(commands.Cog):
     @commands.command(name="naval_setup")
     @commands.has_permissions(administrator=True)
     async def naval_setup(self, ctx: commands.Context, channel: Optional[discord.TextChannel] = None):
-        """Configura o canal para partidas de Batalha Naval.
-        
-        Uso: !naval_setup [canal]
-        Se nenhum canal for especificado, usa o canal atual.
-        """
+        """Configura o canal onde as partidas de Batalha Naval serão jogadas.
+
+Uso: !naval_setup [canal]
+
+Exemplos:
+- !naval_setup
+- !naval_setup #batalha-naval
+"""
         if not channel:
             channel = ctx.channel
         
@@ -1285,10 +1310,13 @@ class NavalCog(commands.Cog):
     @commands.command(name="naval_zerar")
     @commands.has_permissions(administrator=True)
     async def naval_zerar(self, ctx: commands.Context):
-        """Zera todas as estatísticas de Batalha Naval do servidor.
-        
-        Apenas administradores podem executar este comando.
-        """
+        """Zera todas as estatísticas de Batalha Naval do servidor (apenas administradores).
+
+Uso: !naval_zerar
+
+Exemplos:
+- !naval_zerar
+"""
         await self.db.clear_naval_stats(ctx.guild.id)
         
         embed = discord.Embed(
@@ -1301,10 +1329,13 @@ class NavalCog(commands.Cog):
     @commands.command(name="naval_fim")
     @commands.has_permissions(administrator=True)
     async def naval_fim(self, ctx: commands.Context):
-        """Finaliza todas as partidas de Batalha Naval em andamento do servidor.
-        
-        Apenas administradores podem executar este comando.
-        """
+        """Finaliza todas as partidas de Batalha Naval em andamento do servidor (apenas administradores).
+
+Uso: !naval_fim
+
+Exemplos:
+- !naval_fim
+"""
         try:
             # Busca todas as partidas ativas do servidor
             active_games = await self.db.list_active_naval_games(ctx.guild.id)

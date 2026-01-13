@@ -18,7 +18,13 @@ class SetCog(commands.Cog):
     @commands.command(name="set")
     @command_guard("set")
     async def set_registration_embed(self, ctx: commands.Context):
-        """Publica ou atualiza o embed de cadastro no canal configurado."""
+        """Publica ou atualiza o embed de cadastro no canal configurado (apenas Staff/Admin).
+
+Uso: !set
+
+Exemplos:
+- !set
+"""
         guild = ctx.guild
         if not guild:
             await ctx.reply("Apenas em servidores.")

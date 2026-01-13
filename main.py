@@ -52,6 +52,7 @@ async def build_bot() -> commands.Bot:
                 'actions.voice_monitor',
                 'actions.voice_commands',
                 'actions.naval_command',
+                'actions.analytics',
             ]
             
             for ext in extensions:

@@ -1937,7 +1937,13 @@ class ActionCog(commands.Cog):
     
     @commands.command(name="acao")
     async def create_action(self, ctx: commands.Context):
-        """Cria uma nova ação."""
+        """Cria uma nova ação FiveM para registro de participações e pagamentos.
+
+Uso: !acao
+
+Exemplos:
+- !acao
+"""
         if not ctx.guild:
             await ctx.reply("❌ Use este comando em um servidor.")
             return

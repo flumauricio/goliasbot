@@ -261,6 +261,31 @@ class RegistrationConfigView(discord.ui.View):
             inline=False
         )
         
+        # Canais ignorados do Analytics
+        ignored_channels_str = settings.get("analytics_ignored_channels")
+        if ignored_channels_str:
+            try:
+                import json
+                ignored_ids = json.loads(ignored_channels_str) if ignored_channels_str.startswith("[") else [int(cid.strip()) for cid in ignored_channels_str.split(",") if cid.strip()]
+                ignored_channels_list = []
+                for channel_id in ignored_ids:
+                    channel = guild.get_channel(int(channel_id)) if guild else None
+                    if channel:
+                        ignored_channels_list.append(channel.mention)
+                    else:
+                        ignored_channels_list.append(f"`{channel_id}` (não encontrado)")
+                ignored_text = ", ".join(ignored_channels_list) if ignored_channels_list else "Nenhum"
+            except (json.JSONDecodeError, ValueError):
+                ignored_text = "Erro ao carregar"
+        else:
+            ignored_text = "Nenhum canal ignorado"
+        
+        embed.add_field(
+            name="📊 Analytics - Canais Ignorados",
+            value=ignored_text,
+            inline=False
+        )
+        
         embed.set_footer(text="Use os botões abaixo para configurar")
         
         return embed
@@ -276,6 +301,13 @@ class RegistrationConfigView(discord.ui.View):
     async def configure_roles(self, interaction: discord.Interaction, button: discord.ui.Button):
         """Abre view para configurar cargos."""
         view = RoleConfigView(self.bot, self.db, self.guild_id, self)
+        embed = await view.build_embed()
+        await interaction.response.edit_message(embed=embed, view=view)
+    
+    @discord.ui.button(label="📊 Canais Ignorados (Analytics)", style=discord.ButtonStyle.secondary, row=1)
+    async def configure_analytics_channels(self, interaction: discord.Interaction, button: discord.ui.Button):
+        """Abre view para configurar canais ignorados do analytics."""
+        view = AnalyticsIgnoredChannelsView(self.bot, self.db, self.guild_id, self)
         embed = await view.build_embed()
         await interaction.response.edit_message(embed=embed, view=view)
 
@@ -701,6 +733,131 @@ class ChannelConfigView2(discord.ui.View):
         view = ChannelConfigView(self.bot, self.db, self.guild_id, self.parent_view)
         embed = await view.build_embed()
         await interaction.response.edit_message(embed=embed, view=view)
+
+
+class AnalyticsIgnoredChannelsView(discord.ui.View):
+    """View para configurar canais ignorados do sistema de analytics."""
+    
+    def __init__(self, bot: commands.Bot, db: Database, guild_id: int, parent_view):
+        super().__init__(timeout=300)
+        self.bot = bot
+        self.db = db
+        self.guild_id = guild_id
+        self.parent_view = parent_view
+        self.guild = bot.get_guild(guild_id)
+        
+        # ChannelSelect para canais ignorados (múltipla seleção)
+        self.ignored_channels_select = discord.ui.ChannelSelect(
+            placeholder="Selecione os canais a ignorar no analytics...",
+            channel_types=[discord.ChannelType.text],
+            min_values=0,
+            max_values=25,
+            row=0
+        )
+        self.ignored_channels_select.callback = self.on_ignored_channels_select
+        self.add_item(self.ignored_channels_select)
+        
+        # Botão para limpar canais ignorados
+        clear_button = discord.ui.Button(
+            label="🗑️ Limpar Canais Ignorados",
+            style=discord.ButtonStyle.danger,
+            row=1
+        )
+        clear_button.callback = self.clear_ignored_channels
+        self.add_item(clear_button)
+        
+        # Botão voltar
+        if self.parent_view:
+            self.add_item(BackButton(self.parent_view))
+    
+    async def build_embed(self) -> discord.Embed:
+        """Constrói embed com canais ignorados atuais."""
+        settings = await self.db.get_settings(self.guild_id)
+        ignored_channels_str = settings.get("analytics_ignored_channels")
+        
+        embed = discord.Embed(
+            title="📊 Canais Ignorados - Analytics",
+            description="Canais selecionados não serão rastreados pelo sistema de analytics.",
+            color=discord.Color.orange()
+        )
+        
+        if ignored_channels_str:
+            try:
+                import json
+                ignored_ids = json.loads(ignored_channels_str) if ignored_channels_str.startswith("[") else [int(cid.strip()) for cid in ignored_channels_str.split(",") if cid.strip()]
+                ignored_channels_list = []
+                for channel_id in ignored_ids:
+                    channel = self.guild.get_channel(int(channel_id)) if self.guild else None
+                    if channel:
+                        ignored_channels_list.append(f"{channel.mention} ({channel.name})")
+                    else:
+                        ignored_channels_list.append(f"`{channel_id}` (não encontrado)")
+                ignored_text = "\n".join(ignored_channels_list) if ignored_channels_list else "Nenhum"
+            except (json.JSONDecodeError, ValueError):
+                ignored_text = "Erro ao carregar canais"
+        else:
+            ignored_text = "Nenhum canal ignorado"
+        
+        embed.add_field(
+            name="Canais Ignorados",
+            value=ignored_text,
+            inline=False
+        )
+        
+        embed.set_footer(text="Use o seletor abaixo para adicionar/remover canais")
+        
+        return embed
+    
+    async def on_ignored_channels_select(self, interaction: discord.Interaction):
+        """Salva canais ignorados selecionados."""
+        await interaction.response.defer(ephemeral=True)
+        
+        selected_channels = self.ignored_channels_select.values
+        channel_ids = [str(channel.id) for channel in selected_channels]
+        
+        # Salva como JSON string
+        import json
+        ignored_json = json.dumps(channel_ids)
+        
+        await self.db.upsert_settings(
+            self.guild_id,
+            analytics_ignored_channels=ignored_json
+        )
+        
+        # Limpa cache do AnalyticsCog se estiver carregado
+        analytics_cog = self.bot.get_cog("AnalyticsCog")
+        if analytics_cog and hasattr(analytics_cog, "_ignored_channels_cache"):
+            if self.guild_id in analytics_cog._ignored_channels_cache:
+                del analytics_cog._ignored_channels_cache[self.guild_id]
+        
+        embed = await self.build_embed()
+        await interaction.followup.send(
+            f"✅ {len(channel_ids)} canal(is) configurado(s) como ignorado(s).",
+            ephemeral=True
+        )
+        await interaction.message.edit(embed=embed, view=self)
+    
+    async def clear_ignored_channels(self, interaction: discord.Interaction):
+        """Limpa todos os canais ignorados."""
+        await interaction.response.defer(ephemeral=True)
+        
+        await self.db.upsert_settings(
+            self.guild_id,
+            analytics_ignored_channels=None
+        )
+        
+        # Limpa cache do AnalyticsCog se estiver carregado
+        analytics_cog = self.bot.get_cog("AnalyticsCog")
+        if analytics_cog and hasattr(analytics_cog, "_ignored_channels_cache"):
+            if self.guild_id in analytics_cog._ignored_channels_cache:
+                del analytics_cog._ignored_channels_cache[self.guild_id]
+        
+        embed = await self.build_embed()
+        await interaction.followup.send(
+            "✅ Canais ignorados limpos.",
+            ephemeral=True
+        )
+        await interaction.message.edit(embed=embed, view=self)
 
 
 class RoleConfigView(discord.ui.View):

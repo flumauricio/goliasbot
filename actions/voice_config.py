@@ -589,7 +589,13 @@ class VoiceConfigCog(commands.Cog):
     @commands.command(name="ponto_setup")
     @command_guard("ponto_setup")
     async def ponto_setup(self, ctx: commands.Context):
-        """Abre a interface de configuração do sistema de pontos por voz."""
+        """Abre a interface de configuração do sistema de pontos por voz (apenas Staff/Admin).
+
+Uso: !ponto_setup
+
+Exemplos:
+- !ponto_setup
+"""
         if not ctx.guild:
             await ctx.reply("❌ Use este comando em um servidor.")
             return

@@ -20,7 +20,13 @@ class PurgeCog(commands.Cog):
     @commands.has_permissions(manage_messages=True)
     @command_guard("purge")
     async def purge_channel(self, ctx: commands.Context):
-        """Limpa todas as mensagens do canal onde for executado."""
+        """Limpa todas as mensagens do canal onde o comando for executado (apenas Staff/Admin).
+
+Uso: !purge
+
+Exemplos:
+- !purge
+"""
         # Verifica se já está sendo processado (prevenção de duplicação) - thread-safe
         msg_id = ctx.message.id
         with self.bot._processing_lock:

@@ -14,7 +14,13 @@ class InviteCog(commands.Cog):
     
     @commands.command(name="convite")
     async def invite_command(self, ctx: commands.Context):
-        """Gera um link de convite oficial do bot com permissões de administrador."""
+        """Gera um link de convite oficial do bot para adicionar em outros servidores.
+
+Uso: !convite
+
+Exemplos:
+- !convite
+"""
         if not self.bot.user:
             await ctx.reply("❌ Bot não está pronto ainda. Tente novamente em alguns instantes.")
             return

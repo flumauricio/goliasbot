@@ -46,12 +46,14 @@ class VoiceCommandsCog(commands.Cog):
     @commands.command(name="ponto")
     @command_guard("ponto")
     async def ponto(self, ctx: commands.Context, member_mention: Optional[str] = None):
-        """Mostra os pontos de tempo em call de um usuário.
-        
-        Uso: !ponto [@usuario]
-        Se nenhum usuário for mencionado, mostra os pontos do próprio autor.
-        Apenas Staff/Admin pode usar este comando.
-        """
+        """Exibe o tempo total em call de um usuário (apenas Staff/Admin).
+
+Uso: !ponto [@usuario]
+
+Exemplos:
+- !ponto
+- !ponto @Usuario
+"""
         if not ctx.guild:
             await ctx.reply("❌ Use este comando em um servidor.")
             return
@@ -124,10 +126,13 @@ class VoiceCommandsCog(commands.Cog):
     @commands.command(name="ponto_relatorio")
     @command_guard("ponto_relatorio")
     async def ponto_relatorio(self, ctx: commands.Context):
-        """Gera um ranking dos 10 membros com mais tempo acumulado.
-        
-        Apenas Staff/Admin pode usar este comando.
-        """
+        """Gera um ranking dos top 10 membros com mais tempo acumulado em call (apenas Staff/Admin).
+
+Uso: !ponto_relatorio
+
+Exemplos:
+- !ponto_relatorio
+"""
         if not ctx.guild:
             await ctx.reply("❌ Use este comando em um servidor.")
             return
