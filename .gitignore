@@ -47,3 +47,7 @@ Thumbs.db
 *.rar
 Bot.zip
 Untitled*
+
+# Cursor rules and settings
+.cursorrules
+.cursor/

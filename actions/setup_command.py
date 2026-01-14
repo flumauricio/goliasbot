@@ -11,24 +11,13 @@ from db import Database
 from .voice_config import VoiceSetupView
 from .action_config import ActionSetupView
 from .ticket_command import TicketSetupView
-from .registration_config import RegistrationConfigView, CreateChannelModal
+from .registration_config import RegistrationConfigView
 from .permissions_config import PermissionsView
+from .ui_commons import BackButton, CreateChannelModal, build_standard_config_embed, check_bot_permissions, _setup_secure_channel_permissions
 
 LOGGER = logging.getLogger(__name__)
 
 # Usa o set global do bot para prevenir execução duplicada
-
-
-class BackButton(discord.ui.Button):
-    """Botão para voltar ao dashboard principal."""
-    
-    def __init__(self, parent_view):
-        super().__init__(label="⬅️ Voltar", style=discord.ButtonStyle.secondary, row=4)
-        self.parent_view = parent_view
-    
-    async def callback(self, interaction: discord.Interaction):
-        embed = await self.parent_view.build_embed()
-        await interaction.response.edit_message(embed=embed, view=self.parent_view)
 
 
 class NavalSetupView(discord.ui.View):
@@ -56,11 +45,11 @@ class NavalSetupView(discord.ui.View):
         self.naval_channel_select.callback = self.on_naval_channel_select
         self.add_item(self.naval_channel_select)
         
-        # Botão Criar Novo Canal
+        # Botão Criar Novo Canal (linha 3 conforme padrão)
         self.create_channel_btn = discord.ui.Button(
             label="➕ Criar Novo Canal",
             style=discord.ButtonStyle.success,
-            row=1
+            row=3
         )
         self.create_channel_btn.callback = self.create_naval_channel
         self.add_item(self.create_channel_btn)
@@ -68,12 +57,6 @@ class NavalSetupView(discord.ui.View):
     async def build_embed(self) -> discord.Embed:
         """Constrói a embed com as configurações atuais."""
         settings = await self.db.get_settings(self.guild.id)
-        
-        embed = discord.Embed(
-            title="⚓ Configuração do Sistema de Batalha Naval",
-            description="Configure o canal onde as partidas de Batalha Naval serão criadas.",
-            color=discord.Color.blue()
-        )
         
         # Canal de Batalha Naval
         channel_naval_id = settings.get("channel_naval")
@@ -84,20 +67,25 @@ class NavalSetupView(discord.ui.View):
             else:
                 channel_text = f"`{channel_naval_id}` (canal não encontrado)"
         else:
-            channel_text = "❌ Não configurado"
+            channel_text = None
         
-        embed.add_field(
-            name="📢 Canal de Batalha Naval",
-            value=channel_text,
-            inline=False
+        # Usa helper padronizado
+        current_config = {
+            "Canal de Batalha Naval": channel_text
+        }
+        
+        embed = await build_standard_config_embed(
+            title="⚓ Configuração do Sistema de Batalha Naval",
+            description="Configure o canal onde as partidas de Batalha Naval serão criadas.",
+            current_config=current_config,
+            guild=self.guild,
+            footer_text="Selecione um canal abaixo para configurar"
         )
-        
-        embed.set_footer(text="Selecione um canal abaixo para configurar")
         
         return embed
     
     async def on_naval_channel_select(self, interaction: discord.Interaction):
-        """Callback quando um canal é selecionado."""
+        """Callback quando um canal é selecionado - salvamento automático."""
         await interaction.response.defer(ephemeral=True)
         
         selected_channels = interaction.data.get("values", [])
@@ -112,21 +100,21 @@ class NavalSetupView(discord.ui.View):
             await interaction.followup.send("❌ Canal não encontrado.", ephemeral=True)
             return
         
-        # Salva a configuração
+        # Salvamento automático imediato
         await self.db.upsert_settings(self.guild.id, channel_naval=channel.id)
         
-        # Atualiza a embed
+        # Atualiza a embed imediatamente
         embed = await self.build_embed()
-        await interaction.followup.send(
-            f"✅ Canal de Batalha Naval configurado: {channel.mention}",
-            ephemeral=True
-        )
-        
-        # Atualiza a mensagem principal
         try:
             await interaction.message.edit(embed=embed, view=self)
         except discord.NotFound:
             pass
+        
+        # Confirmação efêmera
+        await interaction.followup.send(
+            f"✅ Configurado: Canal de Batalha Naval {channel.mention}",
+            ephemeral=True
+        )
     
     async def create_naval_channel(self, interaction: discord.Interaction):
         """Abre modal para criar canal de Batalha Naval."""
@@ -326,40 +314,6 @@ async def _generate_wizard_report(guild: discord.Guild, db: Database) -> Dict[st
         "total_missing": sum(len(v) for v in missing.values()),
         "total_alerts": sum(len(v) for v in alerts.values())
     }
-
-
-async def _setup_secure_channel_permissions(
-    channel: discord.TextChannel,
-    staff_roles: List[discord.Role]
-) -> None:
-    """Configura permissões automáticas para canais sensíveis."""
-    overwrites = {
-        channel.guild.default_role: discord.PermissionOverwrite(view_channel=False),
-        channel.guild.me: discord.PermissionOverwrite(
-            view_channel=True,
-            send_messages=True,
-            manage_messages=True,
-            read_message_history=True
-        )
-    }
-    
-    # Adiciona permissões para cargos de staff/admin
-    for role in staff_roles:
-        if role:
-            overwrites[role] = discord.PermissionOverwrite(
-                view_channel=True,
-                send_messages=True,
-                read_message_history=True
-            )
-    
-    # Adiciona permissões para administradores (via permissões do Discord)
-    # Nota: Administradores já têm acesso por padrão, mas garantimos explicitamente
-    try:
-        await channel.edit(overwrites=overwrites)
-    except discord.Forbidden:
-        LOGGER.warning("Não foi possível configurar permissões do canal %s", channel.id)
-    except Exception as e:
-        LOGGER.error("Erro ao configurar permissões do canal %s: %s", channel.id, e)
 
 
 async def _health_check_config(

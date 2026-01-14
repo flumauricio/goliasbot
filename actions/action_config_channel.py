@@ -4,71 +4,26 @@ import discord
 from discord.ext import commands
 
 from db import Database
+from .ui_commons import CreateChannelModal as BaseCreateChannelModal
 
 LOGGER = logging.getLogger(__name__)
 
 
-class CreateChannelModal(discord.ui.Modal, title="Criar Novo Canal"):
-    """Modal para criar um novo canal de ações."""
+class CreateChannelModal(BaseCreateChannelModal):
+    """Modal para criar um novo canal de ações (wrapper para compatibilidade)."""
     
     def __init__(self, db: Database, guild_id: int, setup_view, guild: discord.Guild):
-        super().__init__()
-        self.db = db
-        self.guild_id = guild_id
-        self.setup_view = setup_view
-        self.guild = guild
-    
-    channel_name_input = discord.ui.TextInput(
-        label="Nome do Canal",
-        placeholder="Ex: ações-fivem",
-        required=True,
-        max_length=100
-    )
-    
-    async def on_submit(self, interaction: discord.Interaction):
-        """Cria o canal e configura."""
-        try:
-            channel_name = self.channel_name_input.value.strip()
-            if not channel_name:
-                await interaction.response.send_message(
-                    "❌ O nome do canal não pode estar vazio.",
-                    ephemeral=True
-                )
-                return
-            
-            try:
-                channel = await self.guild.create_text_channel(
-                    name=channel_name,
-                    reason=f"Canal criado via !acao_setup por {interaction.user}"
-                )
-                
-                await self.db.upsert_action_settings(self.guild_id, action_channel_id=channel.id)
-                
-                await interaction.response.send_message(
-                    f"✅ Canal **{channel.name}** criado e configurado! {channel.mention}",
-                    ephemeral=True
-                )
-                
-                await self.setup_view.update_embed()
-                
-            except discord.Forbidden:
-                await interaction.response.send_message(
-                    "❌ Não tenho permissão para criar canais. Verifique as permissões do bot.",
-                    ephemeral=True
-                )
-            except Exception as exc:
-                LOGGER.error("Erro ao criar canal: %s", exc, exc_info=True)
-                await interaction.response.send_message(
-                    "❌ Erro ao criar canal. Tente novamente.",
-                    ephemeral=True
-                )
-                
-        except Exception as exc:
-            LOGGER.error("Erro no modal de criar canal: %s", exc, exc_info=True)
-            await interaction.response.send_message(
-                "❌ Erro ao processar. Tente novamente.",
-                ephemeral=True
-            )
+        async def on_success(interaction: discord.Interaction, channel: discord.TextChannel):
+            await db.upsert_action_settings(guild_id, action_channel_id=channel.id)
+            await setup_view.update_embed()
+        
+        super().__init__(
+            guild=guild,
+            title="Criar Novo Canal de Ações",
+            channel_name_label="Nome do Canal",
+            channel_type=discord.ChannelType.text,
+            on_success=on_success
+        )
 
 
 class ChannelSelectView(discord.ui.View):

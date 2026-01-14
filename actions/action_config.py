@@ -7,21 +7,9 @@ from discord.ext import commands
 from db import Database
 
 from .action_config_channel import ChannelSelectView
+from .ui_commons import BackButton, CreateChannelModal, CreateRoleModal, build_standard_config_embed, check_bot_permissions, _setup_secure_channel_permissions
 
 LOGGER = logging.getLogger(__name__)
-
-
-class BackButton(discord.ui.Button):
-    """Botão para voltar ao dashboard principal."""
-    
-    def __init__(self, parent_view):
-        super().__init__(label="⬅️ Voltar ao Dashboard", style=discord.ButtonStyle.secondary, row=4)
-        self.parent_view = parent_view
-    
-    async def callback(self, interaction: discord.Interaction):
-        """Retorna ao dashboard principal."""
-        embed = await self.parent_view.build_embed()
-        await interaction.response.edit_message(embed=embed, view=self.parent_view)
 
 
 class ActionTypeModal(discord.ui.Modal, title="Criar Tipo de Ação"):
@@ -828,10 +816,21 @@ class RoleSelectView(discord.ui.View):
         row=0
     )
     async def add_roles(self, interaction: discord.Interaction, select: discord.ui.RoleSelect):
-        """Adiciona cargos responsáveis."""
+        """Adiciona cargos responsáveis - salvamento automático."""
+        await interaction.response.defer(ephemeral=True)
+        
         if not select.values:
-            await interaction.response.send_message(
+            await interaction.followup.send(
                 "❌ Nenhum cargo selecionado.",
+                ephemeral=True
+            )
+            return
+        
+        # Filtra @everyone (cargo com ID igual ao guild_id)
+        filtered_roles = [role for role in select.values if role.id != self.guild.id]
+        if not filtered_roles:
+            await interaction.followup.send(
+                "⚠️ O cargo @everyone não pode ser usado. Selecione outros cargos.",
                 ephemeral=True
             )
             return
@@ -840,24 +839,27 @@ class RoleSelectView(discord.ui.View):
         already_existing = []
         current_roles = await self.db.get_responsible_roles(self.guild_id)
         
-        for role in select.values:
+        for role in filtered_roles:
             if role.id in current_roles:
                 already_existing.append(role.mention)
             else:
                 await self.db.add_responsible_role(self.guild_id, role.id)
                 added.append(role.mention)
         
+        # Atualiza embed imediatamente
+        await self.setup_view.update_embed(interaction)
+        
+        # Confirmação efêmera
         message_parts = []
         if added:
-            message_parts.append(f"✅ Cargos adicionados: {', '.join(added)}")
+            message_parts.append(f"✅ Adicionados: {', '.join(added)}")
         if already_existing:
             message_parts.append(f"ℹ️ Já existiam: {', '.join(already_existing)}")
         
-        await interaction.response.send_message(
-            "\n".join(message_parts) if message_parts else "❌ Nenhum cargo foi adicionado.",
+        await interaction.followup.send(
+            "\n".join(message_parts) if message_parts else "✅ Configurado",
             ephemeral=True
         )
-        await self.setup_view.update_embed()
     
     @discord.ui.select(
         cls=discord.ui.RoleSelect,
@@ -867,41 +869,49 @@ class RoleSelectView(discord.ui.View):
         row=1
     )
     async def remove_roles(self, interaction: discord.Interaction, select: discord.ui.RoleSelect):
-        """Remove cargos responsáveis."""
+        """Remove cargos responsáveis - salvamento automático."""
+        await interaction.response.defer(ephemeral=True)
+        
         if not select.values:
-            await interaction.response.send_message(
+            await interaction.followup.send(
                 "❌ Nenhum cargo selecionado.",
                 ephemeral=True
             )
             return
         
+        # Filtra @everyone (cargo com ID igual ao guild_id)
+        filtered_roles = [role for role in select.values if role.id != self.guild.id]
+        
         removed = []
         not_found = []
         current_roles = await self.db.get_responsible_roles(self.guild_id)
         
-        for role in select.values:
+        for role in filtered_roles:
             if role.id in current_roles:
                 await self.db.remove_responsible_role(self.guild_id, role.id)
                 removed.append(role.mention)
             else:
                 not_found.append(role.mention)
         
+        # Atualiza embed imediatamente
+        await self.setup_view.update_embed(interaction)
+        
+        # Confirmação efêmera
         message_parts = []
         if removed:
-            message_parts.append(f"✅ Cargos removidos: {', '.join(removed)}")
+            message_parts.append(f"✅ Removidos: {', '.join(removed)}")
         if not_found:
             message_parts.append(f"ℹ️ Não estavam configurados: {', '.join(not_found)}")
         
-        await interaction.response.send_message(
-            "\n".join(message_parts) if message_parts else "❌ Nenhum cargo foi removido.",
+        await interaction.followup.send(
+            "\n".join(message_parts) if message_parts else "✅ Configurado",
             ephemeral=True
         )
-        await self.setup_view.update_embed()
     
     @discord.ui.button(
         label="➕ Criar Novo Cargo",
         style=discord.ButtonStyle.success,
-        row=2,
+        row=3,
         emoji="➕"
     )
     async def create_role(self, interaction: discord.Interaction, button: discord.ui.Button):

@@ -5,111 +5,9 @@ import discord
 from discord.ext import commands
 
 from db import Database
+from .ui_commons import BackButton, CreateChannelModal, CreateRoleModal, build_standard_config_embed, check_bot_permissions, _setup_secure_channel_permissions
 
 LOGGER = logging.getLogger(__name__)
-
-
-class CreateRoleModal(discord.ui.Modal):
-    """Modal genérico para criar cargos."""
-    
-    def __init__(self, guild: discord.Guild, 
-                 on_success: Optional[Callable[[discord.Interaction, discord.Role], Awaitable[None]]] = None):
-        super().__init__(title="Criar Novo Cargo")
-        self.guild = guild
-        self.on_success = on_success
-        self.role_name_input = discord.ui.TextInput(
-            label="Nome do Cargo",
-            placeholder="Ex: Cargo Exemplo",
-            required=True,
-            max_length=100
-        )
-        self.role_color_input = discord.ui.TextInput(
-            label="Cor (Hex, opcional)",
-            placeholder="Ex: #3498db ou deixe em branco",
-            required=False,
-            max_length=7
-        )
-        self.add_item(self.role_name_input)
-        self.add_item(self.role_color_input)
-    
-    async def on_submit(self, interaction: discord.Interaction):
-        """Cria o cargo e chama o callback de sucesso."""
-        try:
-            role_name = self.role_name_input.value.strip()
-            if not role_name:
-                await interaction.response.send_message(
-                    "❌ O nome do cargo não pode estar vazio.",
-                    ephemeral=True
-                )
-                return
-            
-            # Processa cor
-            color = discord.Color.default()
-            color_str = self.role_color_input.value.strip()
-            if color_str:
-                try:
-                    # Remove # se presente
-                    if color_str.startswith("#"):
-                        color_str = color_str[1:]
-                    # Converte hex para int
-                    color_value = int(color_str, 16)
-                    color = discord.Color(color_value)
-                except (ValueError, OverflowError):
-                    await interaction.response.send_message(
-                        "⚠️ Cor inválida. Usando cor padrão.",
-                        ephemeral=True
-                    )
-            
-            # Cria o cargo
-            try:
-                role = await self.guild.create_role(
-                    name=role_name,
-                    color=color,
-                    reason=f"Cargo criado via Dashboard por {interaction.user}"
-                )
-                
-                LOGGER.info(f"Cargo '{role.name}' criado no guild {self.guild.id} por {interaction.user.id}")
-                
-                await interaction.response.send_message(
-                    f"✅ Cargo **{role.name}** criado! {role.mention}",
-                    ephemeral=True
-                )
-                
-                # Chama callback de sucesso se fornecido
-                if self.on_success:
-                    await self.on_success(interaction, role)
-                    
-            except discord.Forbidden:
-                await interaction.response.send_message(
-                    "❌ Não tenho permissão para criar cargos. Verifique as permissões do bot.",
-                    ephemeral=True
-                )
-            except Exception as exc:
-                LOGGER.error("Erro ao criar cargo: %s", exc, exc_info=True)
-                await interaction.response.send_message(
-                    "❌ Erro ao criar cargo. Tente novamente.",
-                    ephemeral=True
-                )
-        except Exception as exc:
-            LOGGER.error("Erro no modal de criar cargo: %s", exc, exc_info=True)
-            if not interaction.response.is_done():
-                await interaction.response.send_message(
-                    "❌ Erro ao processar. Tente novamente.",
-                    ephemeral=True
-                )
-
-
-class BackButton(discord.ui.Button):
-    """Botão para voltar ao dashboard principal."""
-    
-    def __init__(self, parent_view, row=4):
-        super().__init__(label="⬅️ Voltar", style=discord.ButtonStyle.secondary, row=row)
-        self.parent_view = parent_view
-    
-    async def callback(self, interaction: discord.Interaction):
-        """Retorna ao dashboard principal."""
-        embed = await self.parent_view.build_embed()
-        await interaction.response.edit_message(embed=embed, view=self.parent_view)
 
 
 class CommandSelectView(discord.ui.View):
@@ -177,7 +75,7 @@ class CommandPermissionsView(discord.ui.View):
         self.command_name = command_name
         self.permissions_view = permissions_view
         
-        # Role select
+        # Role select (linha 0-2 conforme padrão)
         self.role_select = discord.ui.RoleSelect(
             placeholder="Selecione os cargos permitidos",
             min_values=0,
@@ -187,11 +85,11 @@ class CommandPermissionsView(discord.ui.View):
         self.role_select.callback = self.on_role_select
         self.add_item(self.role_select)
         
-        # Botão Criar Novo Cargo
+        # Botão Criar Novo Cargo (linha 3 conforme padrão)
         self.create_role_btn = discord.ui.Button(
             label="➕ Criar Novo Cargo",
             style=discord.ButtonStyle.success,
-            row=1
+            row=3
         )
         self.create_role_btn.callback = self.create_role
         self.add_item(self.create_role_btn)
@@ -210,18 +108,9 @@ class CommandPermissionsView(discord.ui.View):
         
         role_ids = await self.db.get_command_permissions(self.guild.id, self.command_name)
         
-        embed = discord.Embed(
-            title=f"⚙️ Permissões do Comando: !{self.command_name}",
-            description=command.description or command.brief or "Sem descrição",
-            color=discord.Color.blue()
-        )
-        
+        # Prepara texto de configuração atual
         if not role_ids or role_ids.strip() == "0" or not role_ids.strip():
-            embed.add_field(
-                name="📋 Permissões Atuais",
-                value="Apenas administradores",
-                inline=False
-            )
+            config_text = "Apenas administradores"
         else:
             role_ids_list = [rid.strip() for rid in role_ids.split(",") if rid.strip()]
             roles_mentions = []
@@ -232,41 +121,52 @@ class CommandPermissionsView(discord.ui.View):
                 else:
                     roles_mentions.append(f"`{rid}` (não encontrado)")
             
-            embed.add_field(
-                name="📋 Permissões Atuais",
-                value="\n".join(roles_mentions) if roles_mentions else "Nenhum cargo configurado",
-                inline=False
-            )
+            config_text = "\n".join(roles_mentions) if roles_mentions else "Nenhum cargo configurado"
         
-        embed.add_field(
-            name="💡 Como usar",
-            value="Selecione os cargos abaixo para permitir acesso ao comando.\n"
-                  "Deixe vazio para apenas administradores.",
-            inline=False
+        # Usa helper padronizado
+        current_config = {
+            "Permissões Atuais": config_text
+        }
+        
+        embed = await build_standard_config_embed(
+            title=f"⚙️ Permissões do Comando: !{self.command_name}",
+            description=command.description or command.brief or "Sem descrição",
+            current_config=current_config,
+            guild=self.guild,
+            footer_text="Selecione os cargos abaixo para permitir acesso ao comando. Deixe vazio para apenas administradores."
         )
         
         return embed
     
     async def on_role_select(self, interaction: discord.Interaction):
-        """Atualiza permissões do comando com os cargos selecionados."""
+        """Atualiza permissões do comando com os cargos selecionados - salvamento automático."""
         await interaction.response.defer(ephemeral=True)
         
-        selected_roles = [role.id for role in self.role_select.values]
+        # Filtra @everyone (cargo com ID igual ao guild_id)
+        selected_roles = [role.id for role in self.role_select.values if role.id != self.guild.id]
         
+        # Salvamento automático imediato
         if not selected_roles:
             # Apenas administradores
             await self.db.set_command_permissions(self.guild.id, self.command_name, "0")
             LOGGER.info(f"Permissões do comando '{self.command_name}' atualizadas para guild {self.guild.id}: Apenas administradores")
-            await interaction.followup.send("✅ Permissões atualizadas: Apenas administradores", ephemeral=True)
         else:
             role_ids_str = ",".join(str(rid) for rid in selected_roles)
             await self.db.set_command_permissions(self.guild.id, self.command_name, role_ids_str)
             LOGGER.info(f"Permissões do comando '{self.command_name}' atualizadas para guild {self.guild.id}: {len(selected_roles)} cargo(s) - {role_ids_str}")
-            await interaction.followup.send(f"✅ Permissões atualizadas: {len(selected_roles)} cargo(s)", ephemeral=True)
         
-        # Atualiza embed
+        # Atualiza embed imediatamente
         embed = await self.build_embed()
-        await interaction.edit_original_response(embed=embed, view=self)
+        try:
+            await interaction.message.edit(embed=embed, view=self)
+        except discord.NotFound:
+            pass
+        
+        # Confirmação efêmera
+        if not selected_roles:
+            await interaction.followup.send("✅ Configurado: Apenas administradores", ephemeral=True)
+        else:
+            await interaction.followup.send(f"✅ Configurado: {len(selected_roles)} cargo(s)", ephemeral=True)
     
     async def create_role(self, interaction: discord.Interaction):
         """Abre modal para criar cargo."""
@@ -309,18 +209,9 @@ class PermissionsView(discord.ui.View):
         """Constrói embed com resumo de permissões."""
         all_permissions = await self.db.list_command_permissions(self.guild.id)
         
-        embed = discord.Embed(
-            title="⚙️ Configuração de Permissões de Comandos",
-            description="Gerencie quais cargos podem usar cada comando do bot.",
-            color=discord.Color.blue()
-        )
-        
+        # Prepara texto de configuração atual
         if not all_permissions:
-            embed.add_field(
-                name="📋 Permissões Configuradas",
-                value="Nenhuma permissão configurada.\nTodos os comandos estão disponíveis apenas para administradores.",
-                inline=False
-            )
+            config_text = "Nenhuma permissão configurada.\nTodos os comandos estão disponíveis apenas para administradores."
         else:
             perms_text = []
             for perm in all_permissions[:10]:  # Limite de 10
@@ -344,13 +235,20 @@ class PermissionsView(discord.ui.View):
             if len(all_permissions) > 10:
                 perms_text.append(f"\n*+ {len(all_permissions) - 10} comando(s) adicional(is)*")
             
-            embed.add_field(
-                name="📋 Permissões Configuradas",
-                value="\n".join(perms_text) if perms_text else "Nenhuma",
-                inline=False
-            )
+            config_text = "\n".join(perms_text) if perms_text else "Nenhuma"
         
-        embed.set_footer(text="Use o botão abaixo para configurar um comando")
+        # Usa helper padronizado
+        current_config = {
+            "Permissões Configuradas": config_text
+        }
+        
+        embed = await build_standard_config_embed(
+            title="⚙️ Configuração de Permissões de Comandos",
+            description="Gerencie quais cargos podem usar cada comando do bot.",
+            current_config=current_config,
+            guild=self.guild,
+            footer_text="Use o botão abaixo para configurar um comando"
+        )
         
         return embed
     

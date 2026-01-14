@@ -6,175 +6,20 @@ from discord.ext import commands
 
 from db import Database
 from permissions import command_guard
+from .ui_commons import BackButton, CreateChannelModal, CreateRoleModal, build_standard_config_embed, check_bot_permissions, _setup_secure_channel_permissions
 
 LOGGER = logging.getLogger(__name__)
 
-
-class CreateVoiceChannelModal(discord.ui.Modal):
-    """Modal para criar canais de voz."""
-    
-    def __init__(self, guild: discord.Guild, 
-                 on_success: Optional[Callable[[discord.Interaction, discord.VoiceChannel], Awaitable[None]]] = None):
-        super().__init__(title="Criar Novo Canal de Voz")
-        self.guild = guild
-        self.on_success = on_success
-        self.channel_name_input = discord.ui.TextInput(
-            label="Nome do Canal de Voz",
-            placeholder="Ex: call-geral",
-            required=True,
-            max_length=100
-        )
-        self.add_item(self.channel_name_input)
-    
-    async def on_submit(self, interaction: discord.Interaction):
-        """Cria o canal de voz e chama o callback de sucesso."""
-        try:
-            channel_name = self.channel_name_input.value.strip()
-            if not channel_name:
-                await interaction.response.send_message(
-                    "❌ O nome do canal não pode estar vazio.",
-                    ephemeral=True
-                )
-                return
-            
-            try:
-                channel = await self.guild.create_voice_channel(
-                    name=channel_name,
-                    reason=f"Canal de voz criado via Dashboard por {interaction.user}"
-                )
-                
-                LOGGER.info(f"Canal de voz '{channel.name}' criado no guild {self.guild.id} por {interaction.user.id}")
-                
-                await interaction.response.send_message(
-                    f"✅ Canal de voz **{channel.name}** criado! {channel.mention}",
-                    ephemeral=True
-                )
-                
-                # Chama callback de sucesso se fornecido
-                if self.on_success:
-                    await self.on_success(interaction, channel)
-                    
-            except discord.Forbidden:
-                await interaction.response.send_message(
-                    "❌ Não tenho permissão para criar canais. Verifique as permissões do bot.",
-                    ephemeral=True
-                )
-            except Exception as exc:
-                LOGGER.error("Erro ao criar canal de voz: %s", exc, exc_info=True)
-                await interaction.response.send_message(
-                    "❌ Erro ao criar canal. Tente novamente.",
-                    ephemeral=True
-                )
-        except Exception as exc:
-            LOGGER.error("Erro no modal de criar canal de voz: %s", exc, exc_info=True)
-            if not interaction.response.is_done():
-                await interaction.response.send_message(
-                    "❌ Erro ao processar. Tente novamente.",
-                    ephemeral=True
-                )
-
-
-class CreateRoleModal(discord.ui.Modal):
-    """Modal genérico para criar cargos."""
-    
-    def __init__(self, guild: discord.Guild, 
-                 on_success: Optional[Callable[[discord.Interaction, discord.Role], Awaitable[None]]] = None):
-        super().__init__(title="Criar Novo Cargo")
-        self.guild = guild
-        self.on_success = on_success
-        self.role_name_input = discord.ui.TextInput(
-            label="Nome do Cargo",
-            placeholder="Ex: Cargo Exemplo",
-            required=True,
-            max_length=100
-        )
-        self.role_color_input = discord.ui.TextInput(
-            label="Cor (Hex, opcional)",
-            placeholder="Ex: #3498db ou deixe em branco",
-            required=False,
-            max_length=7
-        )
-        self.add_item(self.role_name_input)
-        self.add_item(self.role_color_input)
-    
-    async def on_submit(self, interaction: discord.Interaction):
-        """Cria o cargo e chama o callback de sucesso."""
-        try:
-            role_name = self.role_name_input.value.strip()
-            if not role_name:
-                await interaction.response.send_message(
-                    "❌ O nome do cargo não pode estar vazio.",
-                    ephemeral=True
-                )
-                return
-            
-            # Processa cor
-            color = discord.Color.default()
-            color_str = self.role_color_input.value.strip()
-            if color_str:
-                try:
-                    # Remove # se presente
-                    if color_str.startswith("#"):
-                        color_str = color_str[1:]
-                    # Converte hex para int
-                    color_value = int(color_str, 16)
-                    color = discord.Color(color_value)
-                except (ValueError, OverflowError):
-                    await interaction.response.send_message(
-                        "⚠️ Cor inválida. Usando cor padrão.",
-                        ephemeral=True
-                    )
-            
-            # Cria o cargo
-            try:
-                role = await self.guild.create_role(
-                    name=role_name,
-                    color=color,
-                    reason=f"Cargo criado via Dashboard por {interaction.user}"
-                )
-                
-                LOGGER.info(f"Cargo '{role.name}' criado no guild {self.guild.id} por {interaction.user.id}")
-                
-                await interaction.response.send_message(
-                    f"✅ Cargo **{role.name}** criado! {role.mention}",
-                    ephemeral=True
-                )
-                
-                # Chama callback de sucesso se fornecido
-                if self.on_success:
-                    await self.on_success(interaction, role)
-                    
-            except discord.Forbidden:
-                await interaction.response.send_message(
-                    "❌ Não tenho permissão para criar cargos. Verifique as permissões do bot.",
-                    ephemeral=True
-                )
-            except Exception as exc:
-                LOGGER.error("Erro ao criar cargo: %s", exc, exc_info=True)
-                await interaction.response.send_message(
-                    "❌ Erro ao criar cargo. Tente novamente.",
-                    ephemeral=True
-                )
-        except Exception as exc:
-            LOGGER.error("Erro no modal de criar cargo: %s", exc, exc_info=True)
-            if not interaction.response.is_done():
-                await interaction.response.send_message(
-                    "❌ Erro ao processar. Tente novamente.",
-                    ephemeral=True
-                )
-
-
-class BackButton(discord.ui.Button):
-    """Botão para voltar ao dashboard principal."""
-    
-    def __init__(self, parent_view):
-        super().__init__(label="⬅️ Voltar ao Dashboard", style=discord.ButtonStyle.secondary, row=4)
-        self.parent_view = parent_view
-    
-    async def callback(self, interaction: discord.Interaction):
-        """Retorna ao dashboard principal."""
-        embed = await self.parent_view.build_embed()
-        await interaction.response.edit_message(embed=embed, view=self.parent_view)
+# Wrapper para CreateVoiceChannelModal usando CreateChannelModal
+def CreateVoiceChannelModal(guild: discord.Guild, on_success=None):
+    """Cria um modal para criar canais de voz usando CreateChannelModal."""
+    return CreateChannelModal(
+        guild=guild,
+        title="Criar Novo Canal de Voz",
+        channel_name_label="Nome do Canal de Voz",
+        channel_type=discord.ChannelType.voice,
+        on_success=on_success
+    )
 
 
 class VoiceChannelSelectView(discord.ui.View):
@@ -197,11 +42,11 @@ class VoiceChannelSelectView(discord.ui.View):
         self.channel_select.callback = self.on_channel_select
         self.add_item(self.channel_select)
         
-        # Botão Criar Novo Canal de Voz
+        # Botão Criar Novo Canal de Voz (linha 3 conforme padrão)
         self.create_channel_btn = discord.ui.Button(
             label="➕ Criar Novo Canal",
             style=discord.ButtonStyle.success,
-            row=1
+            row=3
         )
         self.create_channel_btn.callback = self.create_voice_channel
         self.add_item(self.create_channel_btn)
@@ -310,20 +155,22 @@ class VoiceRoleSelectView(discord.ui.View):
         self.role_select.callback = self.on_role_select
         self.add_item(self.role_select)
         
-        # Botão Criar Novo Cargo
+        # Botão Criar Novo Cargo (linha 3 conforme padrão)
         self.create_role_btn = discord.ui.Button(
             label="➕ Criar Novo Cargo",
             style=discord.ButtonStyle.success,
-            row=1
+            row=3
         )
         self.create_role_btn.callback = self.create_role
         self.add_item(self.create_role_btn)
     
     async def on_role_select(self, interaction: discord.Interaction):
-        """Adiciona ou remove cargos da lista de permitidos."""
+        """Adiciona ou remove cargos da lista de permitidos - salvamento automático."""
         await interaction.response.defer(ephemeral=True)
         
-        selected_roles = [role.id for role in self.role_select.values]
+        # Filtra @everyone (cargo com ID igual ao guild_id)
+        guild_id = self.guild.id if self.guild else self.guild_id
+        selected_roles = [role.id for role in self.role_select.values if role.id != guild_id]
         current_roles = set(await self.db.get_allowed_roles(self.guild_id))
         selected_set = set(selected_roles)
         
