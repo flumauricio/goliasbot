@@ -127,8 +127,8 @@ async def _setup_secure_channel_permissions(
 class BackButton(discord.ui.Button):
     """Botão padronizado para voltar ao dashboard principal."""
     
-    def __init__(self, parent_view):
-        super().__init__(label="⬅️ Voltar", style=discord.ButtonStyle.secondary, row=4)
+    def __init__(self, parent_view, row: int = 4):
+        super().__init__(label="⬅️ Voltar", style=discord.ButtonStyle.secondary, row=row)
         self.parent_view = parent_view
     
     async def callback(self, interaction: discord.Interaction):

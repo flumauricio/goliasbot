@@ -53,6 +53,8 @@ async def build_bot() -> commands.Bot:
                 'actions.voice_commands',
                 'actions.naval_command',
                 'actions.analytics',
+                'actions.hierarchy.promotion_engine',
+                'actions.hierarchy.commands',
             ]
             
             for ext in extensions:
@@ -65,10 +67,68 @@ async def build_bot() -> commands.Bot:
             from actions.registration import RegistrationView, ApprovalView
             from actions.ticket_command import TicketOpenView, TicketControlView
             from actions.action_system import ActionView
+            from actions.hierarchy.approval_view import PromotionApprovalView
+            from actions.hierarchy.repository import HierarchyRepository
+            from actions.hierarchy.cache import HierarchyCache
+            from actions.hierarchy.models import PromotionRequest
             
             self.add_view(RegistrationView(db, config))
             self.add_view(TicketOpenView(db))
             self.add_view(TicketControlView(db))
+            
+            # Restaura views de aprovação de hierarquia pendentes (com custom_id único)
+            cache = HierarchyCache()
+            repository = HierarchyRepository(db, cache)
+            
+            for guild in self.guilds:
+                try:
+                    async with db._conn.cursor() as cur:
+                        await cur.execute(
+                            """
+                            SELECT * FROM promotion_requests
+                            WHERE guild_id = ? AND status = 'pending' AND message_id IS NOT NULL
+                            """,
+                            (str(guild.id),)
+                        )
+                        rows = await cur.fetchall()
+                    
+                    if not rows:
+                        continue
+                    
+                    # Busca colunas
+                    await cur.execute("PRAGMA table_info(promotion_requests)")
+                    col_info = await cur.fetchall()
+                    columns = [col[1] for col in col_info]
+                    
+                    for row in rows:
+                        try:
+                            request_dict = dict(zip(columns, row))
+                            request = PromotionRequest.from_dict(request_dict)
+                            
+                            if not request.id or not request.message_id:
+                                continue
+                            
+                            # Cria view com custom_id único
+                            detailed_reason = request.reason or "Atende todos os requisitos"
+                            view = PromotionApprovalView(self, db, request, detailed_reason)
+                            
+                            # Registra view com message_id para persistência
+                            # O custom_id único permite que o bot processe cliques mesmo após reinício
+                            self.add_view(view, message_id=int(request.message_id))
+                            
+                            LOGGER.debug(
+                                "View de aprovação restaurada: request_id=%d, message_id=%d",
+                                request.id, request.message_id
+                            )
+                            
+                        except Exception as exc:
+                            LOGGER.warning("Erro ao restaurar view de aprovação: %s", exc)
+                except Exception as exc:
+                    LOGGER.warning("Erro ao restaurar views de aprovação em %s: %s", guild.id, exc)
+            
+            # Restaura views de aprovação de hierarquia pendentes (método antigo para compatibilidade)
+            await restore_hierarchy_approval_views(self, db)
+            
             await restore_pending_views(self, db, config)
             await restore_ticket_views(self, db)
 
@@ -128,6 +188,12 @@ async def build_bot() -> commands.Bot:
         
         # CommandNotFound: comando não existe (ignora silenciosamente)
         elif isinstance(error, commands.CommandNotFound):
+            pass
+        
+        # CheckFailure: check de permissão falhou (command_guard já enviou mensagem)
+        elif isinstance(error, commands.CheckFailure):
+            # O command_guard já envia mensagem ao usuário, então apenas logamos em nível debug
+            LOGGER.debug("Check de permissão falhou para comando %s: %s", ctx.command, error)
             pass
         
         # CommandOnCooldown: comando em cooldown
@@ -240,6 +306,90 @@ async def restore_action_views(bot: commands.Bot, db: Database):
                     LOGGER.warning("Erro ao buscar canal para ação %s: %s", action["id"], exc)
     except Exception as exc:
         LOGGER.error("Erro ao restaurar views de ações: %s", exc, exc_info=True)
+
+async def restore_hierarchy_approval_views(bot: commands.Bot, db: Database):
+    """Restaura views de aprovação de hierarquia pendentes."""
+    try:
+        from actions.hierarchy.repository import HierarchyRepository
+        from actions.hierarchy.cache import HierarchyCache
+        from actions.hierarchy.approval_view import PromotionApprovalView, build_approval_embed
+        from actions.hierarchy.models import PromotionRequest
+        
+        cache = HierarchyCache()
+        repository = HierarchyRepository(db, cache)
+        
+        # Busca todos os pedidos pendentes
+        for guild in bot.guilds:
+            try:
+                # Busca pedidos pendentes usando repository
+                async with db._conn.cursor() as cur:
+                    await cur.execute(
+                        """
+                        SELECT * FROM promotion_requests
+                        WHERE guild_id = ? AND status = 'pending' AND message_id IS NOT NULL
+                        """,
+                        (str(guild.id),)
+                    )
+                    rows = await cur.fetchall()
+                
+                if not rows:
+                    continue
+                
+                # Busca colunas
+                await cur.execute("PRAGMA table_info(promotion_requests)")
+                col_info = await cur.fetchall()
+                columns = [col[1] for col in col_info]
+                
+                for row in rows:
+                    try:
+                        request_dict = dict(zip(columns, row))
+                        # Converte valores None para None explicitamente
+                        for key in request_dict:
+                            if request_dict[key] is None:
+                                request_dict[key] = None
+                        request = PromotionRequest.from_dict(request_dict)
+                        
+                        if not request.message_id:
+                            continue
+                        
+                        # Busca canal de staff
+                        settings = await db.get_settings(guild.id)
+                        staff_channel_id = settings.get("channel_warnings")
+                        
+                        if not staff_channel_id:
+                            continue
+                        
+                        staff_channel = guild.get_channel(int(staff_channel_id))
+                        if not staff_channel:
+                            continue
+                        
+                        # Tenta buscar mensagem
+                        try:
+                            message = await staff_channel.fetch_message(int(request.message_id))
+                            
+                            # Recria view (usa reason do request como detailed_reason)
+                            detailed_reason = request.reason or "Atende todos os requisitos"
+                            view = PromotionApprovalView(bot, db, request, detailed_reason)
+                            bot.add_view(view, message_id=int(request.message_id))
+                            
+                            LOGGER.debug(
+                                "View de aprovação restaurada: request_id=%d, message_id=%d",
+                                request.id, request.message_id
+                            )
+                            
+                        except discord.NotFound:
+                            LOGGER.debug("Mensagem de aprovação %s não encontrada", request.message_id)
+                        except Exception as exc:
+                            LOGGER.warning(
+                                "Erro ao restaurar view de aprovação %s: %s",
+                                request.id, exc
+                            )
+                    except Exception as exc:
+                        LOGGER.warning("Erro ao processar pedido de aprovação: %s", exc)
+            except Exception as exc:
+                LOGGER.warning("Erro ao restaurar views de aprovação em %s: %s", guild.id, exc)
+    except Exception as exc:
+        LOGGER.error("Erro ao restaurar views de aprovação: %s", exc, exc_info=True)
 
 async def restore_ticket_views(bot: commands.Bot, db: Database):
     """Restaura views de tickets abertos para garantir persistência."""

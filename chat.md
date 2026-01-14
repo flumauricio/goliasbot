@@ -194,3 +194,12 @@
 - ✅ Sistema integrado ao setup existente
 - ✅ Monitoramento automático de todas as saídas de membros
 - ✅ Relatório enviado automaticamente para canal configurado
+
+## Sessão Atual - Integração de Hierarquia no Setup
+
+### 8. Botão de Hierarquia no Dashboard/Wizard
+
+8.1. **TypeError ao clicar em \"Configurar Hierarquia\"**
+  - **Erro**: `BackButton.__init__() got an unexpected keyword argument 'row'`
+  - **Causa**: `HierarchySetupView` chamava `BackButton(self.parent_view, row=4)`, mas `BackButton` não aceitava `row`.
+  - **Solução**: Atualizado `BackButton` em `actions/ui_commons.py` para aceitar `row: int = 4` e repassar ao `discord.ui.Button`.

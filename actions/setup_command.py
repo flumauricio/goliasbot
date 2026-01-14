@@ -13,6 +13,7 @@ from .action_config import ActionSetupView
 from .ticket_command import TicketSetupView
 from .registration_config import RegistrationConfigView
 from .permissions_config import PermissionsView
+from .hierarchy.config_view import HierarchySetupView
 from .ui_commons import BackButton, CreateChannelModal, build_standard_config_embed, check_bot_permissions, _setup_secure_channel_permissions
 
 LOGGER = logging.getLogger(__name__)
@@ -168,6 +169,11 @@ MODULE_CONFIGS: Dict[str, Dict[str, Any]] = {
         "view_class": NavalSetupView,
         "check_configured": "naval",
     },
+    "hierarchy": {
+        "name": "🎖️ Hierarquia",
+        "view_class": HierarchySetupView,
+        "check_configured": "hierarchy",
+    },
 }
 
 
@@ -202,6 +208,12 @@ async def _check_naval_configured(db: Database, guild_id: int) -> bool:
     """Verifica se o sistema de Batalha Naval está configurado."""
     settings = await db.get_settings(guild_id)
     return bool(settings.get("channel_naval"))
+
+
+async def _check_hierarchy_configured(db: Database, guild_id: int) -> bool:
+    """Verifica se o sistema de hierarquia está configurado."""
+    configs = await db.get_all_hierarchy_roles(guild_id)
+    return len(configs) > 0
 
 
 # ===== Funções Helper =====
@@ -482,6 +494,18 @@ class MainDashboardView(discord.ui.View):
     
     async def _add_dynamic_buttons(self):
         """Adiciona botões dinamicamente baseado no estado."""
+        # Limpa botões dinâmicos existentes para evitar duplicação
+        items_to_remove = []
+        for item in self.children:
+            # Remove botões dinâmicos (wizard, backup, etc) mas mantém botões base
+            if hasattr(item, 'custom_id') and item.custom_id in ["wizard_start", "backup_create", "restore_backup"]:
+                items_to_remove.append(item)
+            elif hasattr(item, 'label') and item.label in ["🔄 Continuar de onde parei", "💾 Criar Backup", "🔄 Restaurar"]:
+                items_to_remove.append(item)
+        
+        for item in items_to_remove:
+            self.remove_item(item)
+        
         # Verifica progresso do wizard
         wizard_progress = None
         try:
@@ -604,6 +628,8 @@ class MainDashboardView(discord.ui.View):
                 is_configured = await _check_voice_configured(self.db, self.guild.id)
             elif check_func_name == "naval":
                 is_configured = await _check_naval_configured(self.db, self.guild.id)
+            elif check_func_name == "hierarchy":
+                is_configured = await _check_hierarchy_configured(self.db, self.guild.id)
             else:  # permissions
                 is_configured = True
             emoji = self.get_module_status_emoji(module_name, is_active, is_configured)
@@ -751,6 +777,17 @@ class MainDashboardView(discord.ui.View):
             return
         
         view = NavalSetupView(self.bot, self.db, interaction.guild, parent_view=self)
+        embed = await view.build_embed()
+        await interaction.response.edit_message(embed=embed, view=view)
+    
+    @discord.ui.button(label="⚙️ Configurar Hierarquia", style=discord.ButtonStyle.primary, row=2)
+    async def open_hierarchy(self, interaction: discord.Interaction, button: discord.ui.Button):
+        """Abre configuração de hierarquia."""
+        if not interaction.guild:
+            await interaction.response.send_message("❌ Use este comando em um servidor.", ephemeral=True)
+            return
+        
+        view = HierarchySetupView(self.bot, self.db, interaction.guild, parent_view=self)
         embed = await view.build_embed()
         await interaction.response.edit_message(embed=embed, view=view)
 
@@ -1610,6 +1647,14 @@ class WizardModuleSelectionView(discord.ui.View):
         )
         self.naval_toggle.callback = lambda i: self.toggle_module(i, "naval", self.naval_toggle)
         self.add_item(self.naval_toggle)
+        
+        self.hierarchy_toggle = discord.ui.Button(
+            label="🎖️ Hierarquia" + (" ✅" if "hierarchy" in self.selected_modules else ""),
+            style=discord.ButtonStyle.success if "hierarchy" in self.selected_modules else discord.ButtonStyle.secondary,
+            row=2
+        )
+        self.hierarchy_toggle.callback = lambda i: self.toggle_module(i, "hierarchy", self.hierarchy_toggle)
+        self.add_item(self.hierarchy_toggle)
     
     async def toggle_module(self, interaction: discord.Interaction, module_name: str, button: discord.ui.Button):
         """Alterna estado do módulo."""
@@ -1647,7 +1692,8 @@ class WizardModuleSelectionView(discord.ui.View):
             "tickets": "Sistema de tickets de suporte",
             "actions": "Sistema de ações FiveM",
             "voice_points": "Monitoramento de tempo em voz",
-            "naval": "Jogo de batalha naval"
+            "naval": "Jogo de batalha naval",
+            "hierarchy": "Sistema de progressão de carreira e hierarquia"
         }
         
         selected_text = []
@@ -1786,6 +1832,9 @@ class WizardModuleConfigView(discord.ui.View):
             view = view_class(self.bot, self.db, self.guild.id, parent_view=self)
             embed = await view.build_embed()
         elif current_module == "naval":
+            view = view_class(self.bot, self.db, self.guild, parent_view=self)
+            embed = await view.build_embed()
+        elif current_module == "hierarchy":
             view = view_class(self.bot, self.db, self.guild, parent_view=self)
             embed = await view.build_embed()
         else:

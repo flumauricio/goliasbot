@@ -1,3 +1,4 @@
+import asyncio
 import logging
 from pathlib import Path
 from typing import Any, Dict, Optional, Tuple
@@ -14,6 +15,8 @@ class Database:
     def __init__(self, path: Path) -> None:
         self.path = path
         self._conn: Optional[aiosqlite.Connection] = None
+        # Serializa escritas no SQLite (aiosqlite usa uma única conexão; concorrência causa "cannot start a transaction...")
+        self._write_lock = asyncio.Lock()
 
     async def initialize(self) -> None:
         """Inicializa a conexão e executa migrações. Deve ser chamado antes de usar o banco."""
@@ -80,6 +83,14 @@ class Database:
                 await cur.execute("ALTER TABLE settings ADD COLUMN channel_naval TEXT")
             if "analytics_ignored_channels" not in cols:
                 await cur.execute("ALTER TABLE settings ADD COLUMN analytics_ignored_channels TEXT")
+            if "rank_log_channel" not in cols:
+                await cur.execute("ALTER TABLE settings ADD COLUMN rank_log_channel TEXT")
+            if "hierarchy_mod_role_id" not in cols:
+                await cur.execute("ALTER TABLE settings ADD COLUMN hierarchy_mod_role_id TEXT")
+            if "hierarchy_check_interval_hours" not in cols:
+                await cur.execute("ALTER TABLE settings ADD COLUMN hierarchy_check_interval_hours INTEGER DEFAULT 1")
+            if "hierarchy_approval_channel" not in cols:
+                await cur.execute("ALTER TABLE settings ADD COLUMN hierarchy_approval_channel TEXT")
 
 
             # Permissões de comandos por guild
@@ -509,6 +520,240 @@ class Database:
                 )
                 """
             )
+            
+            # ===== TABELAS DO SISTEMA DE HIERARQUIA =====
+            
+            # Tabela principal de configuração de hierarquia
+            await cur.execute(
+                """
+                CREATE TABLE IF NOT EXISTS hierarchy_config (
+                    guild_id TEXT NOT NULL,
+                    role_id TEXT NOT NULL,
+                    role_name TEXT NOT NULL,
+                    level_order INTEGER NOT NULL,
+                    role_color TEXT,
+                    max_vacancies INTEGER DEFAULT 0,
+                    is_admin_rank BOOLEAN DEFAULT 0,
+                    auto_promote BOOLEAN DEFAULT 1,
+                    requires_approval BOOLEAN DEFAULT 0,
+                    expiry_days INTEGER DEFAULT 0,
+                    req_messages INTEGER DEFAULT 0,
+                    req_call_time INTEGER DEFAULT 0,
+                    req_reactions INTEGER DEFAULT 0,
+                    req_min_days INTEGER DEFAULT 0,
+                    req_min_any INTEGER DEFAULT 1,
+                    auto_demote_on_lose_req BOOLEAN DEFAULT 0,
+                    auto_demote_inactive_days INTEGER DEFAULT 0,
+                    vacancy_priority TEXT DEFAULT 'first_qualify',
+                    check_frequency_hours INTEGER DEFAULT 24,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    PRIMARY KEY (guild_id, role_id)
+                )
+                """
+            )
+            
+            # Migrações leves para hierarchy_config (adicionar colunas que podem faltar)
+            await cur.execute("PRAGMA table_info(hierarchy_config)")
+            rows = await cur.fetchall()
+            cols = [row[1] for row in rows]
+            if "min_days_in_role" not in cols:
+                await cur.execute("ALTER TABLE hierarchy_config ADD COLUMN min_days_in_role INTEGER DEFAULT 0")
+            
+            # Índices estratégicos para hierarchy_config
+            await cur.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_hierarchy_config_guild_level 
+                ON hierarchy_config(guild_id, level_order)
+                """
+            )
+            await cur.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_hierarchy_config_guild 
+                ON hierarchy_config(guild_id)
+                """
+            )
+            
+            # Tabela de requisitos de cargos externos (normalização)
+            await cur.execute(
+                """
+                CREATE TABLE IF NOT EXISTS hierarchy_role_requirements (
+                    guild_id TEXT NOT NULL,
+                    role_id TEXT NOT NULL,
+                    required_role_id TEXT NOT NULL,
+                    PRIMARY KEY (guild_id, role_id, required_role_id),
+                    FOREIGN KEY (guild_id, role_id) REFERENCES hierarchy_config(guild_id, role_id) ON DELETE CASCADE
+                )
+                """
+            )
+            
+            await cur.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_hierarchy_role_req_role 
+                ON hierarchy_role_requirements(guild_id, role_id)
+                """
+            )
+            
+            # Tabela de acesso a canais (normalização)
+            await cur.execute(
+                """
+                CREATE TABLE IF NOT EXISTS hierarchy_channel_access (
+                    guild_id TEXT NOT NULL,
+                    role_id TEXT NOT NULL,
+                    channel_id TEXT NOT NULL,
+                    PRIMARY KEY (guild_id, role_id, channel_id),
+                    FOREIGN KEY (guild_id, role_id) REFERENCES hierarchy_config(guild_id, role_id) ON DELETE CASCADE
+                )
+                """
+            )
+            
+            await cur.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_hierarchy_channel_access_role 
+                ON hierarchy_channel_access(guild_id, role_id)
+                """
+            )
+            
+            # Tabela de pedidos de promoção
+            await cur.execute(
+                """
+                CREATE TABLE IF NOT EXISTS promotion_requests (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    guild_id TEXT NOT NULL,
+                    user_id TEXT NOT NULL,
+                    current_role_id TEXT,
+                    target_role_id TEXT NOT NULL,
+                    request_type TEXT NOT NULL,
+                    requested_by TEXT,
+                    reason TEXT,
+                    status TEXT DEFAULT 'pending',
+                    message_id TEXT,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    resolved_at TIMESTAMP,
+                    resolved_by TEXT
+                )
+                """
+            )
+            
+            # Índices estratégicos para promotion_requests
+            await cur.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_promotion_requests_guild_status 
+                ON promotion_requests(guild_id, status)
+                """
+            )
+            await cur.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_promotion_requests_user 
+                ON promotion_requests(guild_id, user_id)
+                """
+            )
+            await cur.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_promotion_requests_pending 
+                ON promotion_requests(guild_id, status, created_at) 
+                WHERE status = 'pending'
+                """
+            )
+            
+            # Tabela de status de usuários na hierarquia
+            await cur.execute(
+                """
+                CREATE TABLE IF NOT EXISTS hierarchy_user_status (
+                    guild_id TEXT NOT NULL,
+                    user_id TEXT NOT NULL,
+                    current_role_id TEXT,
+                    promoted_at TIMESTAMP,
+                    last_promotion_check TIMESTAMP,
+                    ignore_auto_promote_until TIMESTAMP,
+                    ignore_auto_demote_until TIMESTAMP,
+                    promotion_cooldown_until TIMESTAMP,
+                    expiry_date TIMESTAMP,
+                    PRIMARY KEY (guild_id, user_id)
+                )
+                """
+            )
+            
+            # Índices estratégicos para hierarchy_user_status
+            await cur.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_hierarchy_user_status_guild_role 
+                ON hierarchy_user_status(guild_id, current_role_id)
+                """
+            )
+            await cur.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_hierarchy_user_status_check 
+                ON hierarchy_user_status(guild_id, last_promotion_check)
+                """
+            )
+            await cur.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_hierarchy_user_status_expiry 
+                ON hierarchy_user_status(expiry_date) 
+                WHERE expiry_date IS NOT NULL
+                """
+            )
+            
+            # Tabela de histórico de promoções/rebaixamentos (com rotação)
+            await cur.execute(
+                """
+                CREATE TABLE IF NOT EXISTS hierarchy_history (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    guild_id TEXT NOT NULL,
+                    user_id TEXT NOT NULL,
+                    action_type TEXT NOT NULL,
+                    from_role_id TEXT,
+                    to_role_id TEXT NOT NULL,
+                    reason TEXT,
+                    performed_by TEXT,
+                    detailed_reason TEXT,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+                """
+            )
+            
+            # Índices estratégicos para hierarchy_history
+            await cur.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_hierarchy_history_guild_user 
+                ON hierarchy_history(guild_id, user_id, created_at DESC)
+                """
+            )
+            await cur.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_hierarchy_history_guild_date 
+                ON hierarchy_history(guild_id, created_at DESC)
+                """
+            )
+            await cur.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_hierarchy_history_cleanup 
+                ON hierarchy_history(created_at)
+                """
+            )
+            
+            # Tabela de tracking de rate limits
+            # Usa date_window como coluna normal (preenchida no INSERT) para compatibilidade
+            await cur.execute(
+                """
+                CREATE TABLE IF NOT EXISTS hierarchy_rate_limit_tracking (
+                    guild_id TEXT NOT NULL,
+                    action_type TEXT NOT NULL,
+                    action_count INTEGER DEFAULT 1,
+                    window_start TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    date_window TEXT NOT NULL,
+                    PRIMARY KEY (guild_id, action_type, date_window)
+                )
+                """
+            )
+            
+            await cur.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_rate_limit_guild_window 
+                ON hierarchy_rate_limit_tracking(guild_id, window_start)
+                """
+            )
 
         await self._conn.commit()
 
@@ -529,6 +774,10 @@ class Database:
         role_adv2: Optional[int] = None,
         message_set_embed: Optional[int] = None,
         analytics_ignored_channels: Optional[str] = None,
+        rank_log_channel: Optional[int] = None,
+        hierarchy_approval_channel: Optional[int] = None,
+        hierarchy_mod_role_id: Optional[int] = None,
+        hierarchy_check_interval_hours: Optional[int] = None,
     ) -> None:
         if not self._conn:
             raise RuntimeError("Database não inicializado. Chame initialize() primeiro.")
@@ -547,6 +796,10 @@ class Database:
             "role_adv2": role_adv2,
             "message_set_embed": message_set_embed,
             "analytics_ignored_channels": analytics_ignored_channels,
+            "rank_log_channel": rank_log_channel,
+            "hierarchy_approval_channel": hierarchy_approval_channel,
+            "hierarchy_mod_role_id": hierarchy_mod_role_id,
+            "hierarchy_check_interval_hours": hierarchy_check_interval_hours,
         }
         existing = await self.get_settings(guild_id)
         merged = {**existing, **{k: v for k, v in data.items() if v is not None}}
@@ -568,8 +821,12 @@ class Database:
                 role_adv1,
                 role_adv2,
                 message_set_embed,
-                analytics_ignored_channels
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                analytics_ignored_channels,
+                rank_log_channel,
+                hierarchy_approval_channel,
+                hierarchy_mod_role_id,
+                hierarchy_check_interval_hours
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(guild_id) DO UPDATE SET
                 channel_registration_embed=excluded.channel_registration_embed,
                 channel_welcome=excluded.channel_welcome,
@@ -584,6 +841,10 @@ class Database:
                 role_adv2=excluded.role_adv2,
                 message_set_embed=excluded.message_set_embed,
                 analytics_ignored_channels=excluded.analytics_ignored_channels,
+                rank_log_channel=excluded.rank_log_channel,
+                hierarchy_approval_channel=excluded.hierarchy_approval_channel,
+                hierarchy_mod_role_id=excluded.hierarchy_mod_role_id,
+                hierarchy_check_interval_hours=excluded.hierarchy_check_interval_hours,
                 updated_at=CURRENT_TIMESTAMP
             """,
             (
@@ -601,6 +862,10 @@ class Database:
                 str(merged.get("role_adv2")) if merged.get("role_adv2") else None,
                 str(merged.get("message_set_embed")) if merged.get("message_set_embed") else None,
                 merged.get("analytics_ignored_channels"),  # Já é string (JSON)
+                str(merged.get("rank_log_channel")) if merged.get("rank_log_channel") else None,
+                str(merged.get("hierarchy_approval_channel")) if merged.get("hierarchy_approval_channel") else None,
+                str(merged.get("hierarchy_mod_role_id")) if merged.get("hierarchy_mod_role_id") else None,
+                merged.get("hierarchy_check_interval_hours"),  # Integer
             ),
         )
         await self._conn.commit()
@@ -2972,6 +3237,662 @@ class Database:
                 (str(guild_id),)
             )
             row = await cur.fetchone()
+    
+    # ===== MÉTODOS DE HIERARQUIA =====
+    
+    async def upsert_hierarchy_config(
+        self,
+        guild_id: int,
+        role_id: int,
+        role_name: str,
+        level_order: int,
+        role_color: Optional[str] = None,
+        max_vacancies: int = 0,
+        is_admin_rank: bool = False,
+        auto_promote: bool = True,
+        requires_approval: bool = False,
+        expiry_days: int = 0,
+        req_messages: int = 0,
+        req_call_time: int = 0,
+        req_reactions: int = 0,
+        req_min_days: int = 0,
+        min_days_in_role: int = 0,
+        req_min_any: int = 1,
+        auto_demote_on_lose_req: bool = False,
+        auto_demote_inactive_days: int = 0,
+        vacancy_priority: str = 'first_qualify',
+        check_frequency_hours: int = 24
+    ) -> None:
+        """Cria ou atualiza configuração de cargo na hierarquia (transação atômica)."""
+        if not self._conn:
+            raise RuntimeError("Database não inicializado. Chame initialize() primeiro.")
+        
+        async with self._conn.cursor() as cur:
+            await cur.execute("BEGIN TRANSACTION")
+            try:
+                await cur.execute(
+                    """
+                    INSERT INTO hierarchy_config (
+                        guild_id, role_id, role_name, level_order, role_color,
+                        max_vacancies, is_admin_rank, auto_promote, requires_approval,
+                        expiry_days, req_messages, req_call_time, req_reactions,
+                        req_min_days, min_days_in_role, req_min_any, auto_demote_on_lose_req,
+                        auto_demote_inactive_days, vacancy_priority, check_frequency_hours,
+                        updated_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+                    ON CONFLICT(guild_id, role_id) DO UPDATE SET
+                        role_name = excluded.role_name,
+                        level_order = excluded.level_order,
+                        role_color = excluded.role_color,
+                        max_vacancies = excluded.max_vacancies,
+                        is_admin_rank = excluded.is_admin_rank,
+                        auto_promote = excluded.auto_promote,
+                        requires_approval = excluded.requires_approval,
+                        expiry_days = excluded.expiry_days,
+                        req_messages = excluded.req_messages,
+                        req_call_time = excluded.req_call_time,
+                        req_reactions = excluded.req_reactions,
+                        req_min_days = excluded.req_min_days,
+                        min_days_in_role = excluded.min_days_in_role,
+                        req_min_any = excluded.req_min_any,
+                        auto_demote_on_lose_req = excluded.auto_demote_on_lose_req,
+                        auto_demote_inactive_days = excluded.auto_demote_inactive_days,
+                        vacancy_priority = excluded.vacancy_priority,
+                        check_frequency_hours = excluded.check_frequency_hours,
+                        updated_at = CURRENT_TIMESTAMP
+                    """,
+                    (
+                        str(guild_id), str(role_id), role_name, level_order, role_color,
+                        max_vacancies, int(is_admin_rank), int(auto_promote), int(requires_approval),
+                        expiry_days, req_messages, req_call_time, req_reactions,
+                        req_min_days, min_days_in_role, req_min_any, int(auto_demote_on_lose_req),
+                        auto_demote_inactive_days, vacancy_priority, check_frequency_hours
+                    )
+                )
+                await cur.execute("COMMIT")
+            except Exception as e:
+                await cur.execute("ROLLBACK")
+                raise
+    
+    async def get_hierarchy_config(
+        self, guild_id: int, role_id: Optional[int] = None
+    ) -> Optional[Dict[str, Any]]:
+        """Busca configuração de cargo(s) na hierarquia."""
+        if not self._conn:
+            raise RuntimeError("Database não inicializado. Chame initialize() primeiro.")
+        
+        async with self._conn.cursor() as cur:
+            if role_id:
+                await cur.execute(
+                    """
+                    SELECT * FROM hierarchy_config
+                    WHERE guild_id = ? AND role_id = ?
+                    """,
+                    (str(guild_id), str(role_id))
+                )
+            else:
+                await cur.execute(
+                    """
+                    SELECT * FROM hierarchy_config
+                    WHERE guild_id = ?
+                    ORDER BY level_order ASC
+                    """,
+                    (str(guild_id),)
+                )
+            row = await cur.fetchone()
+            return dict(row) if row else None
+    
+    async def get_all_hierarchy_roles(
+        self, guild_id: int, order_by: str = 'level_order'
+    ) -> Tuple[Dict[str, Any], ...]:
+        """Lista todos os cargos da hierarquia ordenados."""
+        if not self._conn:
+            raise RuntimeError("Database não inicializado. Chame initialize() primeiro.")
+        
+        order_clause = f"ORDER BY {order_by} ASC" if order_by == 'level_order' else f"ORDER BY {order_by} ASC"
+        
+        async with self._conn.cursor() as cur:
+            await cur.execute(
+                f"""
+                SELECT * FROM hierarchy_config
+                WHERE guild_id = ?
+                {order_clause}
+                """,
+                (str(guild_id),)
+            )
+            rows = await cur.fetchall()
+            return tuple(dict(row) for row in rows)
+    
+    async def get_hierarchy_role_by_level(
+        self, guild_id: int, level_order: int
+    ) -> Optional[Dict[str, Any]]:
+        """Busca cargo por nível hierárquico."""
+        if not self._conn:
+            raise RuntimeError("Database não inicializado. Chame initialize() primeiro.")
+        
+        async with self._conn.cursor() as cur:
+            await cur.execute(
+                """
+                SELECT * FROM hierarchy_config
+                WHERE guild_id = ? AND level_order = ?
+                LIMIT 1
+                """,
+                (str(guild_id), level_order)
+            )
+            row = await cur.fetchone()
+            return dict(row) if row else None
+    
+    async def delete_hierarchy_config(self, guild_id: int, role_id: int) -> None:
+        """Remove cargo da hierarquia (CASCADE nas tabelas relacionadas)."""
+        if not self._conn:
+            raise RuntimeError("Database não inicializado. Chame initialize() primeiro.")
+        
+        async with self._conn.cursor() as cur:
+            await cur.execute(
+                """
+                DELETE FROM hierarchy_config
+                WHERE guild_id = ? AND role_id = ?
+                """,
+                (str(guild_id), str(role_id))
+            )
+        await self._conn.commit()
+    
+    async def add_hierarchy_role_requirement(
+        self, guild_id: int, role_id: int, required_role_id: int
+    ) -> None:
+        """Adiciona cargo externo necessário para promoção."""
+        if not self._conn:
+            raise RuntimeError("Database não inicializado. Chame initialize() primeiro.")
+        
+        async with self._conn.cursor() as cur:
+            await cur.execute(
+                """
+                INSERT OR IGNORE INTO hierarchy_role_requirements
+                (guild_id, role_id, required_role_id)
+                VALUES (?, ?, ?)
+                """,
+                (str(guild_id), str(role_id), str(required_role_id))
+            )
+        await self._conn.commit()
+    
+    async def remove_hierarchy_role_requirement(
+        self, guild_id: int, role_id: int, required_role_id: int
+    ) -> None:
+        """Remove cargo externo necessário."""
+        if not self._conn:
+            raise RuntimeError("Database não inicializado. Chame initialize() primeiro.")
+        
+        async with self._conn.cursor() as cur:
+            await cur.execute(
+                """
+                DELETE FROM hierarchy_role_requirements
+                WHERE guild_id = ? AND role_id = ? AND required_role_id = ?
+                """,
+                (str(guild_id), str(role_id), str(required_role_id))
+            )
+        await self._conn.commit()
+    
+    async def get_hierarchy_role_requirements(
+        self, guild_id: int, role_id: int
+    ) -> Tuple[int, ...]:
+        """Lista cargos externos necessários para promoção."""
+        if not self._conn:
+            raise RuntimeError("Database não inicializado. Chame initialize() primeiro.")
+        
+        async with self._conn.cursor() as cur:
+            await cur.execute(
+                """
+                SELECT required_role_id FROM hierarchy_role_requirements
+                WHERE guild_id = ? AND role_id = ?
+                """,
+                (str(guild_id), str(role_id))
+            )
+            rows = await cur.fetchall()
+            return tuple(int(row[0]) for row in rows)
+    
+    async def add_hierarchy_channel_access(
+        self, guild_id: int, role_id: int, channel_id: int
+    ) -> None:
+        """Adiciona acesso a canal para cargo."""
+        if not self._conn:
+            raise RuntimeError("Database não inicializado. Chame initialize() primeiro.")
+        
+        async with self._conn.cursor() as cur:
+            await cur.execute(
+                """
+                INSERT OR IGNORE INTO hierarchy_channel_access
+                (guild_id, role_id, channel_id)
+                VALUES (?, ?, ?)
+                """,
+                (str(guild_id), str(role_id), str(channel_id))
+            )
+        await self._conn.commit()
+    
+    async def remove_hierarchy_channel_access(
+        self, guild_id: int, role_id: int, channel_id: int
+    ) -> None:
+        """Remove acesso a canal."""
+        if not self._conn:
+            raise RuntimeError("Database não inicializado. Chame initialize() primeiro.")
+        
+        async with self._conn.cursor() as cur:
+            await cur.execute(
+                """
+                DELETE FROM hierarchy_channel_access
+                WHERE guild_id = ? AND role_id = ? AND channel_id = ?
+                """,
+                (str(guild_id), str(role_id), str(channel_id))
+            )
+        await self._conn.commit()
+    
+    async def get_hierarchy_channel_access(
+        self, guild_id: int, role_id: int
+    ) -> Tuple[int, ...]:
+        """Lista canais com acesso automático."""
+        if not self._conn:
+            raise RuntimeError("Database não inicializado. Chame initialize() primeiro.")
+        
+        async with self._conn.cursor() as cur:
+            await cur.execute(
+                """
+                SELECT channel_id FROM hierarchy_channel_access
+                WHERE guild_id = ? AND role_id = ?
+                """,
+                (str(guild_id), str(role_id))
+            )
+            rows = await cur.fetchall()
+            return tuple(int(row[0]) for row in rows)
+    
+    async def create_promotion_request(
+        self,
+        guild_id: int,
+        user_id: int,
+        target_role_id: int,
+        request_type: str = 'auto',
+        current_role_id: Optional[int] = None,
+        requested_by: Optional[int] = None,
+        reason: Optional[str] = None,
+        message_id: Optional[int] = None
+    ) -> int:
+        """Cria pedido de promoção (serializado por lock para evitar transação aninhada)."""
+        if not self._conn:
+            raise RuntimeError("Database não inicializado. Chame initialize() primeiro.")
+        async with self._write_lock:
+            async with self._conn.cursor() as cur:
+                await cur.execute(
+                    """
+                    INSERT INTO promotion_requests
+                    (guild_id, user_id, current_role_id, target_role_id, request_type,
+                     requested_by, reason, status, message_id)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', ?)
+                    """,
+                    (
+                        str(guild_id), str(user_id),
+                        str(current_role_id) if current_role_id else None,
+                        str(target_role_id), request_type,
+                        str(requested_by) if requested_by else None,
+                        reason, str(message_id) if message_id else None
+                    )
+                )
+                request_id = cur.lastrowid
+            await self._conn.commit()
+            return int(request_id) if request_id is not None else 0
+    
+    async def get_pending_promotion_requests(
+        self, guild_id: int, user_id: Optional[int] = None
+    ) -> Tuple[Dict[str, Any], ...]:
+        """Busca pedidos de promoção pendentes."""
+        if not self._conn:
+            raise RuntimeError("Database não inicializado. Chame initialize() primeiro.")
+        
+        async with self._conn.cursor() as cur:
+            if user_id:
+                await cur.execute(
+                    """
+                    SELECT * FROM promotion_requests
+                    WHERE guild_id = ? AND user_id = ? AND status = 'pending'
+                    ORDER BY created_at DESC
+                    """,
+                    (str(guild_id), str(user_id))
+                )
+            else:
+                await cur.execute(
+                    """
+                    SELECT * FROM promotion_requests
+                    WHERE guild_id = ? AND status = 'pending'
+                    ORDER BY created_at DESC
+                    """,
+                    (str(guild_id),)
+                )
+            rows = await cur.fetchall()
+            return tuple(dict(row) for row in rows)
+    
+    async def resolve_promotion_request(
+        self, request_id: int, status: str, resolved_by: int
+    ) -> None:
+        """Resolve pedido de promoção (serializado por lock para evitar transação aninhada)."""
+        if not self._conn:
+            raise RuntimeError("Database não inicializado. Chame initialize() primeiro.")
+        async with self._write_lock:
+            async with self._conn.cursor() as cur:
+                await cur.execute(
+                    """
+                    UPDATE promotion_requests
+                    SET status = ?, resolved_at = CURRENT_TIMESTAMP, resolved_by = ?
+                    WHERE id = ?
+                    """,
+                    (status, str(resolved_by), request_id)
+                )
+            await self._conn.commit()
+    
+    async def get_user_hierarchy_status(
+        self, guild_id: int, user_id: int
+    ) -> Optional[Dict[str, Any]]:
+        """Busca status atual do usuário na hierarquia."""
+        if not self._conn:
+            raise RuntimeError("Database não inicializado. Chame initialize() primeiro.")
+        
+        async with self._conn.cursor() as cur:
+            await cur.execute(
+                """
+                SELECT * FROM hierarchy_user_status
+                WHERE guild_id = ? AND user_id = ?
+                """,
+                (str(guild_id), str(user_id))
+            )
+            row = await cur.fetchone()
+            return dict(row) if row else None
+    
+    async def update_user_hierarchy_status(
+        self,
+        guild_id: int,
+        user_id: int,
+        current_role_id: Optional[int] = None,
+        promoted_at: Optional[str] = None,
+        last_promotion_check: Optional[str] = None,
+        ignore_auto_promote_until: Optional[str] = None,
+        ignore_auto_demote_until: Optional[str] = None,
+        promotion_cooldown_until: Optional[str] = None,
+        expiry_date: Optional[str] = None
+    ) -> None:
+        """Atualiza status do usuário na hierarquia (serializado por lock)."""
+        if not self._conn:
+            raise RuntimeError("Database não inicializado. Chame initialize() primeiro.")
+        async with self._write_lock:
+            # Primeiro busca valores atuais para preservar campos não especificados
+            async with self._conn.cursor() as cur:
+                await cur.execute(
+                    """
+                    SELECT * FROM hierarchy_user_status
+                    WHERE guild_id = ? AND user_id = ?
+                    """,
+                    (str(guild_id), str(user_id))
+                )
+                existing = await cur.fetchone()
+                
+                # Se existe, usa valores atuais como padrão
+                if existing:
+                    existing_dict = dict(existing)
+                    # Atualiza apenas campos fornecidos
+                    final_current_role_id = str(current_role_id) if current_role_id is not None else existing_dict.get('current_role_id')
+                    final_promoted_at = promoted_at if promoted_at is not None else existing_dict.get('promoted_at')
+                    final_last_promotion_check = last_promotion_check if last_promotion_check is not None else existing_dict.get('last_promotion_check')
+                    final_ignore_auto_promote_until = ignore_auto_promote_until if ignore_auto_promote_until is not None else existing_dict.get('ignore_auto_promote_until')
+                    final_ignore_auto_demote_until = ignore_auto_demote_until if ignore_auto_demote_until is not None else existing_dict.get('ignore_auto_demote_until')
+                    final_promotion_cooldown_until = promotion_cooldown_until if promotion_cooldown_until is not None else existing_dict.get('promotion_cooldown_until')
+                    final_expiry_date = expiry_date if expiry_date is not None else existing_dict.get('expiry_date')
+                    
+                    await cur.execute(
+                        """
+                        UPDATE hierarchy_user_status
+                        SET current_role_id = ?,
+                            promoted_at = ?,
+                            last_promotion_check = ?,
+                            ignore_auto_promote_until = ?,
+                            ignore_auto_demote_until = ?,
+                            promotion_cooldown_until = ?,
+                            expiry_date = ?
+                        WHERE guild_id = ? AND user_id = ?
+                        """,
+                        (
+                            final_current_role_id,
+                            final_promoted_at,
+                            final_last_promotion_check,
+                            final_ignore_auto_promote_until,
+                            final_ignore_auto_demote_until,
+                            final_promotion_cooldown_until,
+                            final_expiry_date,
+                            str(guild_id), str(user_id)
+                        )
+                    )
+                else:
+                    await cur.execute(
+                        """
+                        INSERT INTO hierarchy_user_status
+                        (guild_id, user_id, current_role_id, promoted_at, last_promotion_check,
+                         ignore_auto_promote_until, ignore_auto_demote_until,
+                         promotion_cooldown_until, expiry_date)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        """,
+                        (
+                            str(guild_id), str(user_id),
+                            str(current_role_id) if current_role_id else None,
+                            promoted_at, last_promotion_check,
+                            ignore_auto_promote_until, ignore_auto_demote_until,
+                            promotion_cooldown_until, expiry_date
+                        )
+                    )
+            await self._conn.commit()
+
+    async def get_hierarchy_user_status_user_ids(self, guild_id: int) -> Tuple[int, ...]:
+        """Lista user_ids existentes na hierarchy_user_status para um servidor."""
+        if not self._conn:
+            raise RuntimeError("Database não inicializado. Chame initialize() primeiro.")
+        async with self._conn.cursor() as cur:
+            await cur.execute(
+                """
+                SELECT DISTINCT user_id FROM hierarchy_user_status
+                WHERE guild_id = ?
+                """,
+                (str(guild_id),)
+            )
+            rows = await cur.fetchall()
+            out: list[int] = []
+            for row in rows:
+                try:
+                    out.append(int(row[0]))
+                except Exception:
+                    continue
+            return tuple(out)
+    
+    async def add_hierarchy_history(
+        self,
+        guild_id: int,
+        user_id: int,
+        action_type: str,
+        to_role_id: int,
+        from_role_id: Optional[int] = None,
+        reason: Optional[str] = None,
+        performed_by: Optional[int] = None,
+        detailed_reason: Optional[str] = None
+    ) -> int:
+        """Adiciona entrada ao histórico de hierarquia."""
+        if not self._conn:
+            raise RuntimeError("Database não inicializado. Chame initialize() primeiro.")
+        
+        async with self._conn.cursor() as cur:
+            await cur.execute(
+                """
+                INSERT INTO hierarchy_history
+                (guild_id, user_id, action_type, from_role_id, to_role_id,
+                 reason, performed_by, detailed_reason)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    str(guild_id), str(user_id), action_type,
+                    str(from_role_id) if from_role_id else None,
+                    str(to_role_id), reason,
+                    str(performed_by) if performed_by else None,
+                    detailed_reason
+                )
+            )
+            history_id = cur.lastrowid
+        await self._conn.commit()
+        return history_id
+    
+    async def get_user_hierarchy_history(
+        self, guild_id: int, user_id: int, limit: int = 50
+    ) -> Tuple[Dict[str, Any], ...]:
+        """Busca histórico de hierarquia do usuário."""
+        if not self._conn:
+            raise RuntimeError("Database não inicializado. Chame initialize() primeiro.")
+        
+        async with self._conn.cursor() as cur:
+            await cur.execute(
+                """
+                SELECT * FROM hierarchy_history
+                WHERE guild_id = ? AND user_id = ?
+                ORDER BY created_at DESC
+                LIMIT ?
+                """,
+                (str(guild_id), str(user_id), limit)
+            )
+            rows = await cur.fetchall()
+            return tuple(dict(row) for row in rows)
+    
+    async def get_latest_hierarchy_history(
+        self, guild_id: int, user_id: int, action_type: str = 'promoted', to_role_id: Optional[int] = None
+    ) -> Optional[Dict[str, Any]]:
+        """Busca a entrada mais recente do histórico de hierarquia do usuário."""
+        if not self._conn:
+            raise RuntimeError("Database não inicializado. Chame initialize() primeiro.")
+        
+        async with self._conn.cursor() as cur:
+            if to_role_id is not None:
+                await cur.execute(
+                    """
+                    SELECT * FROM hierarchy_history
+                    WHERE guild_id = ? AND user_id = ? AND action_type = ? AND to_role_id = ?
+                    ORDER BY created_at DESC
+                    LIMIT 1
+                    """,
+                    (str(guild_id), str(user_id), action_type, str(to_role_id))
+                )
+            else:
+                await cur.execute(
+                    """
+                    SELECT * FROM hierarchy_history
+                    WHERE guild_id = ? AND user_id = ? AND action_type = ?
+                    ORDER BY created_at DESC
+                    LIMIT 1
+                    """,
+                    (str(guild_id), str(user_id), action_type)
+                )
+            row = await cur.fetchone()
+            return dict(row) if row else None
+    
+    async def cleanup_old_history(self, days: int = 90) -> int:
+        """Remove histórico antigo (rotação de logs)."""
+        if not self._conn:
+            raise RuntimeError("Database não inicializado. Chame initialize() primeiro.")
+        
+        async with self._conn.cursor() as cur:
+            await cur.execute(
+                """
+                DELETE FROM hierarchy_history
+                WHERE created_at < datetime('now', '-' || ? || ' days')
+                """,
+                (days,)
+            )
+            deleted = cur.rowcount
+        await self._conn.commit()
+        return deleted
+    
+    async def track_rate_limit_action(
+        self, guild_id: int, action_type: str
+    ) -> None:
+        """Registra ação para tracking de rate limit."""
+        if not self._conn:
+            raise RuntimeError("Database não inicializado. Chame initialize() primeiro.")
+        
+        async with self._conn.cursor() as cur:
+            await cur.execute(
+                """
+                INSERT INTO hierarchy_rate_limit_tracking
+                (guild_id, action_type, action_count, window_start, date_window)
+                VALUES (?, ?, 1, datetime('now'), DATE('now'))
+                ON CONFLICT(guild_id, action_type, date_window) DO UPDATE SET
+                    action_count = action_count + 1,
+                    window_start = datetime('now')
+                """,
+                (str(guild_id), action_type)
+            )
+        await self._conn.commit()
+    
+    async def get_rate_limit_count(
+        self, guild_id: int, action_type: str, hours: int = 48
+    ) -> int:
+        """Conta ações nas últimas N horas para rate limiting."""
+        if not self._conn:
+            raise RuntimeError("Database não inicializado. Chame initialize() primeiro.")
+        
+        async with self._conn.cursor() as cur:
+            await cur.execute(
+                """
+                SELECT SUM(action_count) FROM hierarchy_rate_limit_tracking
+                WHERE guild_id = ? AND action_type = ?
+                AND window_start >= datetime('now', '-' || ? || ' hours')
+                """,
+                (str(guild_id), action_type, hours)
+            )
+            row = await cur.fetchone()
+            return row[0] if row[0] else 0
+    
+    async def cleanup_expired_rate_limits(self, days: int = 7) -> int:
+        """Remove tracking antigo de rate limits."""
+        if not self._conn:
+            raise RuntimeError("Database não inicializado. Chame initialize() primeiro.")
+        
+        async with self._conn.cursor() as cur:
+            await cur.execute(
+                """
+                DELETE FROM hierarchy_rate_limit_tracking
+                WHERE window_start < datetime('now', '-' || ? || ' days')
+                """,
+                (days,)
+            )
+            deleted = cur.rowcount
+        await self._conn.commit()
+        return deleted
+    
+    async def get_users_eligible_for_promotion(
+        self, guild_id: int, role_id: int
+    ) -> Tuple[Dict[str, Any], ...]:
+        """Lista usuários elegíveis para promoção (otimizado com índices)."""
+        if not self._conn:
+            raise RuntimeError("Database não inicializado. Chame initialize() primeiro.")
+        
+        async with self._conn.cursor() as cur:
+            # Busca usuários com cargo atual inferior ao target
+            await cur.execute(
+                """
+                SELECT hus.* FROM hierarchy_user_status hus
+                INNER JOIN hierarchy_config hc_current ON
+                    hus.guild_id = hc_current.guild_id AND
+                    hus.current_role_id = hc_current.role_id
+                INNER JOIN hierarchy_config hc_target ON
+                    hc_target.guild_id = ? AND hc_target.role_id = ?
+                WHERE hus.guild_id = ?
+                AND hc_current.level_order < hc_target.level_order
+                AND (hus.ignore_auto_promote_until IS NULL OR hus.ignore_auto_promote_until < CURRENT_TIMESTAMP)
+                AND (hus.promotion_cooldown_until IS NULL OR hus.promotion_cooldown_until < CURRENT_TIMESTAMP)
+                ORDER BY hus.last_promotion_check ASC
+                LIMIT 100
+                """,
+                (str(guild_id), str(role_id), str(guild_id))
+            )
+            rows = await cur.fetchall()
+            return tuple(dict(row) for row in rows)
             return float(row[0]) if row and row[0] is not None else 0.0
     
     async def update_rankings(self, guild_id: int) -> None:

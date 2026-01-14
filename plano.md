@@ -156,6 +156,7 @@
 - ✅ **ValueError no ticket_command.py (row 0)**: Corrigido layout UI onde botões "➕ Criar" estavam tentando compartilhar linha 0 com `ChannelSelect` que ocupa linha inteira. Botões movidos para linha 4 com lógica dinâmica para respeitar limite de 5 componentes por linha. Apenas 1-2 botões "➕ Criar" são adicionados para evitar overflow
 - ✅ **AttributeError no voice_config.py**: Adicionado método `create_voice_channel` faltante na classe `VoiceChannelSelectView` com modal para criar novos canais de voz
 - ✅ **AttributeError em naval_config.py (arquivo inexistente)**: Removido arquivo de cache obsoleto `naval_config.cpython-312.pyc` que estava causando erro ao executar `!naval_setup`. O arquivo fonte `naval_config.py` havia sido removido em refatoração anterior, mas o bytecode permaneceu em cache
+- ✅ **TypeError no botão de Voltar (Hierarquia)**: `BackButton` não aceitava o parâmetro `row`, mas `HierarchySetupView` chamava `BackButton(..., row=4)`. Solução: tornar `BackButton.__init__(..., row: int = 4)` compatível e repassar `row` ao `discord.ui.Button`.
 
 #### Correção de Múltiplas Instâncias:
 - ✅ **Múltiplas instâncias do bot rodando**: Identificadas e encerradas 2+ instâncias rodando simultaneamente (terminais 10 e 11), causando comandos duplicados e rate limits. Solução: Encerrar todas as instâncias Python do .venv antes de iniciar nova instância

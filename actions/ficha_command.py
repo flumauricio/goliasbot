@@ -1,7 +1,7 @@
 import asyncio
 import logging
 import math
-from datetime import timedelta
+from datetime import timedelta, datetime
 from typing import Optional, Dict, Any, Tuple
 
 import discord
@@ -543,6 +543,252 @@ class VoiceTimeModal(discord.ui.Modal, title="Editar Tempo de Voz"):
             await interaction.followup.send("❌ Erro ao editar tempo de voz.", ephemeral=True)
 
 
+class PromoteModal(discord.ui.Modal, title="Promover Membro"):
+    """Modal para promover membro manualmente."""
+    
+    motivo = discord.ui.TextInput(
+        label="Motivo da Promoção",
+        placeholder="Digite o motivo da promoção...",
+        style=discord.TextStyle.paragraph,
+        max_length=500,
+        required=True
+    )
+    
+    def __init__(self, ficha_cog, member: discord.Member):
+        super().__init__()
+        self.ficha_cog = ficha_cog
+        self.member = member
+    
+    async def on_submit(self, interaction: discord.Interaction):
+        await interaction.response.defer(ephemeral=True)
+        
+        try:
+            from .hierarchy.repository import HierarchyRepository
+            from .hierarchy.cache import HierarchyCache
+            from .hierarchy.promotion_engine import HierarchyPromotionCog
+            
+            cache = HierarchyCache()
+            repository = HierarchyRepository(self.ficha_cog.db, cache)
+            
+            # Busca status atual
+            user_status = await repository.get_user_status(interaction.guild.id, self.member.id)
+            if not user_status or not user_status.current_role_id:
+                await interaction.followup.send(
+                    "❌ Membro não possui cargo de hierarquia configurado.",
+                    ephemeral=True
+                )
+                return
+            
+            # Busca configuração do cargo atual
+            current_config = await repository.get_config(
+                interaction.guild.id, user_status.current_role_id
+            )
+            if not current_config:
+                await interaction.followup.send(
+                    "❌ Cargo atual não encontrado na hierarquia.",
+                    ephemeral=True
+                )
+                return
+            
+            # Busca próximo cargo
+            next_config = await repository.get_config_by_level(
+                interaction.guild.id, current_config.level_order + 1
+            )
+            if not next_config:
+                await interaction.followup.send(
+                    "❌ Não há cargo superior disponível.",
+                    ephemeral=True
+                )
+                return
+            
+            # Usa motor de promoção para promover
+            temp_cog = HierarchyPromotionCog(self.ficha_cog.bot, self.ficha_cog.db)
+            result = await temp_cog._promote_user(
+                interaction.guild,
+                self.member.id,
+                user_status.current_role_id,
+                next_config,
+                f"Promoção manual por {interaction.user}: {self.motivo.value}",
+                str(interaction.user.id)
+            )
+            
+            if "error" in result:
+                await interaction.followup.send(
+                    f"❌ Erro ao promover: {result['error']}",
+                    ephemeral=True
+                )
+                return
+            
+            # Ignora promoção automática por 7 dias após promoção manual
+            ignore_until = (datetime.utcnow() + timedelta(days=7)).strftime("%Y-%m-%d %H:%M:%S")
+            await repository.update_user_status(
+                interaction.guild.id,
+                self.member.id,
+                ignore_auto_promote_until=ignore_until
+            )
+            
+            # Atualiza ficha
+            registration_data = await self.ficha_cog._get_user_registration_data(
+                interaction.guild.id, self.member.id
+            )
+            embed = await self.ficha_cog._build_user_ficha_embed(
+                interaction.guild, self.member, registration_data, interaction.user
+            )
+            view = await self.ficha_cog._create_ficha_view(
+                interaction.guild, self.member, interaction.user
+            )
+            
+            await interaction.message.edit(embed=embed, view=view)
+            await interaction.followup.send(
+                f"✅ {self.member.mention} foi promovido para {interaction.guild.get_role(next_config.role_id).mention}!",
+                ephemeral=True
+            )
+            
+        except Exception as e:
+            LOGGER.error("Erro ao promover membro: %s", e, exc_info=True)
+            await interaction.followup.send(
+                "❌ Erro ao promover membro. Tente novamente.",
+                ephemeral=True
+            )
+
+
+class DemoteModal(discord.ui.Modal, title="Rebaixar Membro"):
+    """Modal para rebaixar membro manualmente."""
+    
+    motivo = discord.ui.TextInput(
+        label="Motivo do Rebaixamento",
+        placeholder="Digite o motivo do rebaixamento...",
+        style=discord.TextStyle.paragraph,
+        max_length=500,
+        required=True
+    )
+    
+    def __init__(self, ficha_cog, member: discord.Member):
+        super().__init__()
+        self.ficha_cog = ficha_cog
+        self.member = member
+    
+    async def on_submit(self, interaction: discord.Interaction):
+        await interaction.response.defer(ephemeral=True)
+        
+        try:
+            from .hierarchy.repository import HierarchyRepository
+            from .hierarchy.cache import HierarchyCache
+            from datetime import datetime, timedelta
+            
+            cache = HierarchyCache()
+            repository = HierarchyRepository(self.ficha_cog.db, cache)
+            
+            # Busca status atual
+            user_status = await repository.get_user_status(interaction.guild.id, self.member.id)
+            if not user_status or not user_status.current_role_id:
+                await interaction.followup.send(
+                    "❌ Membro não possui cargo de hierarquia configurado.",
+                    ephemeral=True
+                )
+                return
+            
+            # Busca configuração do cargo atual
+            current_config = await repository.get_config(
+                interaction.guild.id, user_status.current_role_id
+            )
+            if not current_config:
+                await interaction.followup.send(
+                    "❌ Cargo atual não encontrado na hierarquia.",
+                    ephemeral=True
+                )
+                return
+            
+            # Busca cargo anterior (inferior)
+            prev_config = await repository.get_config_by_level(
+                interaction.guild.id, current_config.level_order - 1
+            )
+            if not prev_config:
+                await interaction.followup.send(
+                    "❌ Não há cargo inferior disponível.",
+                    ephemeral=True
+                )
+                return
+            
+            # Remove cargo atual e adiciona cargo anterior
+            current_role = interaction.guild.get_role(current_config.role_id)
+            prev_role = interaction.guild.get_role(prev_config.role_id)
+            
+            if not current_role or not prev_role:
+                await interaction.followup.send(
+                    "❌ Cargos não encontrados no servidor.",
+                    ephemeral=True
+                )
+                return
+            
+            # Verifica hierarquia do bot
+            from .hierarchy.utils import check_bot_hierarchy
+            can_manage, error_msg = check_bot_hierarchy(interaction.guild, prev_role)
+            if not can_manage:
+                await interaction.followup.send(
+                    f"❌ {error_msg}",
+                    ephemeral=True
+                )
+                return
+            
+            # Remove cargo atual e adiciona anterior
+            await self.member.remove_roles(
+                current_role,
+                reason=f"Rebaixamento manual por {interaction.user}: {self.motivo.value}"
+            )
+            await self.member.add_roles(
+                prev_role,
+                reason=f"Rebaixamento manual por {interaction.user}: {self.motivo.value}"
+            )
+            
+            # Atualiza status no banco
+            now_str = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
+            ignore_until = (datetime.utcnow() + timedelta(days=7)).strftime("%Y-%m-%d %H:%M:%S")
+            
+            await repository.update_user_status(
+                interaction.guild.id,
+                self.member.id,
+                current_role_id=prev_config.role_id,
+                ignore_auto_promote_until=ignore_until,
+                ignore_auto_demote_until=ignore_until
+            )
+            
+            # Adiciona ao histórico
+            await repository.add_history(
+                interaction.guild.id,
+                self.member.id,
+                "manual_demotion",
+                prev_config.role_id,
+                from_role_id=current_config.role_id,
+                reason=f"Rebaixamento manual por {interaction.user}: {self.motivo.value}",
+                performed_by=interaction.user.id
+            )
+            
+            # Atualiza ficha
+            registration_data = await self.ficha_cog._get_user_registration_data(
+                interaction.guild.id, self.member.id
+            )
+            embed = await self.ficha_cog._build_user_ficha_embed(
+                interaction.guild, self.member, registration_data, interaction.user
+            )
+            view = await self.ficha_cog._create_ficha_view(
+                interaction.guild, self.member, interaction.user
+            )
+            
+            await interaction.message.edit(embed=embed, view=view)
+            await interaction.followup.send(
+                f"✅ {self.member.mention} foi rebaixado para {prev_role.mention}!",
+                ephemeral=True
+            )
+            
+        except Exception as e:
+            LOGGER.error("Erro ao rebaixar membro: %s", e, exc_info=True)
+            await interaction.followup.send(
+                "❌ Erro ao rebaixar membro. Tente novamente.",
+                ephemeral=True
+            )
+
+
 class StaffNoteModal(discord.ui.Modal, title="Adicionar Nota Interna"):
     """Modal para adicionar nota interna (apenas para Staff)."""
     
@@ -793,11 +1039,41 @@ class MemberFichaView(discord.ui.View):
             moderation_button.callback = self.show_moderation_menu
             self.add_item(moderation_button)
             
+            # Progressão de Carreira (se houver hierarquia configurada)
+            try:
+                from .hierarchy.repository import HierarchyRepository
+                from .hierarchy.cache import HierarchyCache
+                
+                cache = HierarchyCache()
+                repository = HierarchyRepository(self.ficha_cog.db, cache)
+                user_status = await repository.get_user_status(self.guild.id, self.member.id)
+                
+                if user_status and user_status.current_role_id:
+                    # Botão Promover
+                    promote_button = discord.ui.Button(
+                        label="⬆️ Promover",
+                        style=discord.ButtonStyle.success,
+                        row=1
+                    )
+                    promote_button.callback = self.promote_member
+                    self.add_item(promote_button)
+                    
+                    # Botão Rebaixar
+                    demote_button = discord.ui.Button(
+                        label="⬇️ Rebaixar",
+                        style=discord.ButtonStyle.danger,
+                        row=1
+                    )
+                    demote_button.callback = self.demote_member
+                    self.add_item(demote_button)
+            except Exception:
+                pass  # Ignora se hierarquia não estiver configurada
+            
             # Editar Tempo de Voz
             voice_time_button = discord.ui.Button(
                 label="⏱️ Editar Tempo",
                 style=discord.ButtonStyle.primary,
-                row=1
+                row=2
             )
             voice_time_button.callback = self.edit_voice_time
             self.add_item(voice_time_button)
@@ -856,6 +1132,16 @@ class MemberFichaView(discord.ui.View):
     async def add_staff_note(self, interaction: discord.Interaction):
         """Abre modal para adicionar nota interna."""
         modal = StaffNoteModal(self.ficha_cog, self.member)
+        await interaction.response.send_modal(modal)
+    
+    async def promote_member(self, interaction: discord.Interaction):
+        """Abre modal para promover membro manualmente."""
+        modal = PromoteModal(self.ficha_cog, self.member)
+        await interaction.response.send_modal(modal)
+    
+    async def demote_member(self, interaction: discord.Interaction):
+        """Abre modal para rebaixar membro manualmente."""
+        modal = DemoteModal(self.ficha_cog, self.member)
         await interaction.response.send_modal(modal)
 
 
@@ -1270,7 +1556,7 @@ class FichaCog(commands.Cog):
                 
                 # Buscar média do servidor para calcular temperatura
                 avg_messages = await self.db.get_server_avg_messages(guild.id)
-                if avg_messages == 0:
+                if avg_messages is None or avg_messages == 0:
                     avg_messages = 1  # Evita divisão por zero
                 
                 # Gerar barra de temperatura
@@ -1318,6 +1604,195 @@ class FichaCog(commands.Cog):
                 value="Nenhuma",
                 inline=True
             )
+        
+        # ===== PROGRESSÃO DE CARREIRA (HIERARQUIA) =====
+        try:
+            from .hierarchy.repository import HierarchyRepository
+            from .hierarchy.cache import HierarchyCache
+            
+            cache = HierarchyCache()
+            repository = HierarchyRepository(self.db, cache)
+            
+            # ===== SINCRONIZAÇÃO SILENCIOSA: Verifica se cargo no Discord corresponde ao banco =====
+            # Regra Crítica: Só sincroniza se o cargo estiver na configuração de hierarquia
+            all_configs = await repository.get_all_configs(guild.id)
+            member_hierarchy_roles = [
+                role for role in member.roles 
+                if any(config.role_id == role.id for config in all_configs)
+            ]
+            
+            user_status = await repository.get_user_status(guild.id, member.id)
+            
+            if member_hierarchy_roles:
+                # Pega o cargo de maior level_order (mais alto na hierarquia)
+                highest_role = None
+                highest_level = 0
+                for role in member_hierarchy_roles:
+                    config = await repository.get_config(guild.id, role.id)
+                    if config and config.level_order > highest_level:
+                        highest_level = config.level_order
+                        highest_role = role
+                
+                # Se diferente do banco, sincroniza silenciosamente
+                if highest_role and (not user_status or user_status.current_role_id != highest_role.id):
+                    await repository.update_user_status(
+                        guild.id, member.id,
+                        current_role_id=highest_role.id,
+                        last_promotion_check=datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
+                    )
+                    # Atualiza user_status para usar na exibição
+                    user_status = await repository.get_user_status(guild.id, member.id)
+                    LOGGER.debug(
+                        "Sincronização silenciosa: usuário %s atualizado para cargo %s (nível %d)",
+                        member.id, highest_role.name, highest_level
+                    )
+            elif user_status and user_status.current_role_id:
+                # Membro não tem mais cargo de hierarquia no Discord, limpa banco
+                await repository.update_user_status(
+                    guild.id, member.id,
+                    current_role_id=None
+                )
+                user_status = None
+                LOGGER.debug(
+                    "Sincronização silenciosa: usuário %s não possui mais cargo de hierarquia, banco limpo",
+                    member.id
+                )
+            if user_status and user_status.current_role_id:
+                current_role = guild.get_role(user_status.current_role_id)
+                if current_role:
+                    # Busca configuração do cargo atual
+                    config = await repository.get_config(guild.id, user_status.current_role_id)
+                    if config:
+                        # Busca próximo cargo
+                        next_config = await repository.get_config_by_level(guild.id, config.level_order + 1)
+                        
+                        hierarchy_text = f"**Cargo Atual:** {current_role.mention} (Nível {config.level_order})"
+                        
+                        if next_config:
+                            next_role = guild.get_role(next_config.role_id)
+                            if next_role:
+                                hierarchy_text += f"\n**Próximo Cargo:** {next_role.mention} (Nível {next_config.level_order})"
+                                
+                                # Calcula progresso e cria barra visual
+                                try:
+                                    from .hierarchy.promotion_engine import HierarchyPromotionCog
+                                    temp_cog = HierarchyPromotionCog(self.bot, self.db)
+                                    meets_req, detailed_reason = await temp_cog._check_requirements(
+                                        guild, member.id, next_config
+                                    )
+                                    
+                                    # Extrai informações de progresso da detailed_reason
+                                    import re
+                                    progress_info = []
+                                    req_details = []
+                                    
+                                    # Mensagens
+                                    if "Mensagens:" in detailed_reason:
+                                        msg_match = re.search(r'Mensagens: (\d+)/(\d+)', detailed_reason)
+                                        if msg_match:
+                                            current, required = int(msg_match.group(1)), int(msg_match.group(2))
+                                            status = "✅" if current >= required else "❌"
+                                            progress_info.append((current, required))
+                                            req_details.append(f"💬 Mensagens: {current:,}/{required:,} {status}")
+                                    
+                                    # Call Time
+                                    if "Call Time:" in detailed_reason:
+                                        call_match = re.search(r'Call Time: (\d+)h/(\d+)h', detailed_reason)
+                                        if call_match:
+                                            current, required = int(call_match.group(1)), int(call_match.group(2))
+                                            status = "✅" if current >= required else "❌"
+                                            progress_info.append((current, required))
+                                            req_details.append(f"📞 Call: {current}h/{required}h {status}")
+                                    
+                                    # Reações
+                                    if "Reações:" in detailed_reason:
+                                        react_match = re.search(r'Reações: (\d+)/(\d+)', detailed_reason)
+                                        if react_match:
+                                            current, required = int(react_match.group(1)), int(react_match.group(2))
+                                            status = "✅" if current >= required else "❌"
+                                            progress_info.append((current, required))
+                                            req_details.append(f"⭐ Reações: {current:,}/{required:,} {status}")
+                                    
+                                    # Dias no Servidor
+                                    if "Dias no Servidor:" in detailed_reason:
+                                        days_match = re.search(r'Dias no Servidor: (\d+)/(\d+)', detailed_reason)
+                                        if days_match:
+                                            current, required = int(days_match.group(1)), int(days_match.group(2))
+                                            status = "✅" if current >= required else "❌"
+                                            progress_info.append((current, required))
+                                            req_details.append(f"📅 Dias: {current}/{required} {status}")
+                                    
+                                    # Tempo no Cargo
+                                    if "Tempo no Cargo:" in detailed_reason:
+                                        time_match = re.search(r'Tempo no Cargo: (\d+)/(\d+) dias', detailed_reason)
+                                        if time_match:
+                                            current, required = int(time_match.group(1)), int(time_match.group(2))
+                                            status = "✅" if current >= required else "❌"
+                                            progress_info.append((current, required))
+                                            req_details.append(f"⏳ Tempo no Cargo: {current}/{required} dias {status}")
+                                    
+                                    # Exibe lista completa de requisitos
+                                    if req_details:
+                                        hierarchy_text += "\n\n**📋 Requisitos:**"
+                                        # Quebra em múltiplas linhas se houver muitos requisitos
+                                        if len(req_details) <= 2:
+                                            hierarchy_text += "\n" + " | ".join(req_details)
+                                        else:
+                                            # Formata em linhas separadas para melhor legibilidade
+                                            for detail in req_details:
+                                                hierarchy_text += f"\n• {detail}"
+                                    
+                                    # Calcula progresso médio geral
+                                    if progress_info:
+                                        percentages = []
+                                        for current, required in progress_info:
+                                            if required is not None and required > 0:
+                                                pct = min(100, int((current / required * 100)))
+                                                percentages.append(pct)
+                                        
+                                        if percentages:
+                                            avg_progress = int(sum(percentages) / len(percentages))
+                                            
+                                            # Barra visual com 10 blocos baseada na média
+                                            filled = min(10, int(avg_progress / 10))
+                                            bar = "▰" * filled + "▱" * (10 - filled)
+                                            
+                                            hierarchy_text += f"\n\n**📊 Progresso Médio:** {bar} {avg_progress}%"
+                                    
+                                    # Informação de vagas (se aplicável)
+                                    if next_config.max_vacancies > 0:
+                                        # Conta usuários com o cargo (excluindo bots)
+                                        role = guild.get_role(next_config.role_id)
+                                        if role:
+                                            occupied = sum(1 for m in role.members if not m.bot)
+                                            available = max(0, next_config.max_vacancies - occupied)
+                                            hierarchy_text += f"\n**👥 Vagas:** {occupied}/{next_config.max_vacancies} ocupadas"
+                                            if available > 0:
+                                                hierarchy_text += f" ({available} disponíveis)"
+                                            else:
+                                                hierarchy_text += " (sem vagas)"
+                                    
+                                    # Status de elegibilidade
+                                    if meets_req:
+                                        hierarchy_text += "\n\n✅ **Elegível para promoção**"
+                                    else:
+                                        hierarchy_text += "\n\n❌ **Não elegível ainda**"
+                                        
+                                except Exception as e:
+                                    LOGGER.warning("Erro ao calcular progresso: %s", e)
+                                    # Se viewer for staff, mostra status básico
+                                    if viewer and await self._check_staff_permissions(viewer, guild):
+                                        hierarchy_text += "\n⚠️ **Erro ao verificar requisitos**"
+                        else:
+                            hierarchy_text += "\n🏆 **Cargo máximo alcançado**"
+                        
+                        embed.add_field(
+                            name="🎖️ Progressão de Carreira",
+                            value=hierarchy_text,
+                            inline=False
+                        )
+        except Exception as exc:
+            LOGGER.warning("Erro ao buscar dados de hierarquia: %s", exc)
         
         # ===== ÚLTIMOS LOGS =====
         try:
