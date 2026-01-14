@@ -484,6 +484,31 @@ class Database:
                 )
                 """
             )
+            
+            # Tabela para progresso do wizard
+            await cur.execute(
+                """
+                CREATE TABLE IF NOT EXISTS wizard_progress (
+                    guild_id TEXT PRIMARY KEY,
+                    current_step TEXT NOT NULL,
+                    selected_modules TEXT,
+                    config_data TEXT,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+                """
+            )
+            
+            # Tabela para backups de configuração
+            await cur.execute(
+                """
+                CREATE TABLE IF NOT EXISTS config_backups (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    guild_id TEXT NOT NULL,
+                    backup_data TEXT NOT NULL,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+                """
+            )
 
         await self._conn.commit()
 
@@ -3008,6 +3033,143 @@ class Database:
             )
             row = await cur.fetchone()
             return int(row[0]) if row else None
+
+    # ===== Wizard Progress =====
+    
+    async def save_wizard_progress(
+        self,
+        guild_id: int,
+        current_step: str,
+        selected_modules: Optional[str] = None,
+        config_data: Optional[str] = None,
+    ) -> None:
+        """Salva o progresso do wizard."""
+        if not self._conn:
+            raise RuntimeError("Database não inicializado. Chame initialize() primeiro.")
+        
+        async with self._conn.cursor() as cur:
+            await cur.execute(
+                """
+                INSERT INTO wizard_progress (guild_id, current_step, selected_modules, config_data)
+                VALUES (?, ?, ?, ?)
+                ON CONFLICT(guild_id) DO UPDATE SET
+                    current_step = excluded.current_step,
+                    selected_modules = excluded.selected_modules,
+                    config_data = excluded.config_data,
+                    updated_at = CURRENT_TIMESTAMP
+                """,
+                (str(guild_id), current_step, selected_modules, config_data)
+            )
+        await self._conn.commit()
+    
+    async def get_wizard_progress(self, guild_id: int) -> Optional[Dict[str, Any]]:
+        """Recupera o progresso do wizard."""
+        if not self._conn:
+            raise RuntimeError("Database não inicializado. Chame initialize() primeiro.")
+        
+        async with self._conn.cursor() as cur:
+            await cur.execute(
+                """
+                SELECT * FROM wizard_progress
+                WHERE guild_id = ?
+                """,
+                (str(guild_id),)
+            )
+            row = await cur.fetchone()
+            return dict(row) if row else None
+    
+    async def clear_wizard_progress(self, guild_id: int) -> None:
+        """Limpa o progresso do wizard."""
+        if not self._conn:
+            raise RuntimeError("Database não inicializado. Chame initialize() primeiro.")
+        
+        async with self._conn.cursor() as cur:
+            await cur.execute(
+                "DELETE FROM wizard_progress WHERE guild_id = ?",
+                (str(guild_id),)
+            )
+        await self._conn.commit()
+    
+    # ===== Config Backups =====
+    
+    async def save_backup(self, guild_id: int, backup_data: Dict[str, Any]) -> int:
+        """Salva um backup das configurações."""
+        if not self._conn:
+            raise RuntimeError("Database não inicializado. Chame initialize() primeiro.")
+        
+        import json
+        backup_json = json.dumps(backup_data)
+        
+        async with self._conn.cursor() as cur:
+            await cur.execute(
+                """
+                INSERT INTO config_backups (guild_id, backup_data)
+                VALUES (?, ?)
+                """,
+                (str(guild_id), backup_json)
+            )
+            backup_id = cur.lastrowid
+        await self._conn.commit()
+        return backup_id
+    
+    async def get_latest_backup(self, guild_id: int) -> Optional[Dict[str, Any]]:
+        """Recupera o backup mais recente."""
+        if not self._conn:
+            raise RuntimeError("Database não inicializado. Chame initialize() primeiro.")
+        
+        import json
+        async with self._conn.cursor() as cur:
+            await cur.execute(
+                """
+                SELECT * FROM config_backups
+                WHERE guild_id = ?
+                ORDER BY created_at DESC
+                LIMIT 1
+                """,
+                (str(guild_id),)
+            )
+            row = await cur.fetchone()
+            if row:
+                result = dict(row)
+                result["backup_data"] = json.loads(result["backup_data"])
+                return result
+            return None
+    
+    async def list_backups(self, guild_id: int, limit: int = 10) -> Tuple[Dict[str, Any], ...]:
+        """Lista backups recentes."""
+        if not self._conn:
+            raise RuntimeError("Database não inicializado. Chame initialize() primeiro.")
+        
+        import json
+        async with self._conn.cursor() as cur:
+            await cur.execute(
+                """
+                SELECT * FROM config_backups
+                WHERE guild_id = ?
+                ORDER BY created_at DESC
+                LIMIT ?
+                """,
+                (str(guild_id), limit)
+            )
+            rows = await cur.fetchall()
+            results = []
+            for row in rows:
+                result = dict(row)
+                result["backup_data"] = json.loads(result["backup_data"])
+                results.append(result)
+            return tuple(results)
+    
+    async def delete_backup(self, backup_id: int) -> None:
+        """Deleta um backup."""
+        if not self._conn:
+            raise RuntimeError("Database não inicializado. Chame initialize() primeiro.")
+        
+        async with self._conn.cursor() as cur:
+            await cur.execute(
+                "DELETE FROM config_backups WHERE id = ?",
+                (backup_id,)
+            )
+        await self._conn.commit()
 
     async def close(self) -> None:
         """Fecha a conexão com o banco de dados."""

@@ -670,6 +670,15 @@ class TopicSelectView(discord.ui.View):
                 category = None
         
         if not category or not isinstance(category, discord.CategoryChannel):
+            # Erro crítico: categoria não existe
+            await self._send_critical_error_notification(
+                guild,
+                "categoria",
+                "Categoria de Tickets",
+                str(cat_id),
+                "Sistema de Tickets",
+                "Tickets não podem ser criados"
+            )
             await interaction.response.send_message(
                 "❌ Categoria de tickets não encontrada. Use `!ticket_setup` para reconfigurar.",
                 ephemeral=True
@@ -742,6 +751,44 @@ class TopicSelectView(discord.ui.View):
                         )
             except (ValueError, TypeError) as e:
                 LOGGER.warning("Erro ao processar cargos globais ao criar ticket: %s", e)
+        
+        # Verifica se cargos globais de staff são válidos
+        if global_staff_roles_str:
+            invalid_roles = []
+            try:
+                global_role_ids = [int(rid.strip()) for rid in global_staff_roles_str.split(",") if rid.strip() and str(rid.strip()).isdigit()]
+                for global_role_id in global_role_ids:
+                    role = guild.get_role(global_role_id)
+                    if not role:
+                        invalid_roles.append(str(global_role_id))
+            except (ValueError, TypeError):
+                pass
+            
+            if invalid_roles:
+                # Notifica sobre cargos inválidos
+                cog = guild.get_member(self.bot.user.id)
+                if cog:
+                    from .registration import _get_settings
+                    channels, _, _ = await _get_settings(self.db, guild.id)
+                    target_channel = None
+                    approval_channel_id = channels.get("approval") or channels.get("channel_approval")
+                    if approval_channel_id:
+                        target_channel = guild.get_channel(int(approval_channel_id))
+                    if not target_channel:
+                        warn_channel_id = channels.get("warnings") or channels.get("channel_warnings")
+                        if warn_channel_id:
+                            target_channel = guild.get_channel(int(warn_channel_id))
+                    if target_channel:
+                        embed = discord.Embed(
+                            title="⚠️ Erro de Configuração",
+                            description=f"Alguns cargos globais de staff configurados não existem mais: {', '.join(invalid_roles)}",
+                            color=discord.Color.orange()
+                        )
+                        embed.add_field(name="Ação necessária", value="Use `!setup` para atualizar os cargos.", inline=False)
+                        try:
+                            await target_channel.send(embed=embed)
+                        except:
+                            pass
         
         # Adiciona permissão para administradores
         overwrites[guild.default_role] = discord.PermissionOverwrite(view_channel=False)
@@ -1419,6 +1466,18 @@ class ConfirmCloseView(discord.ui.View):
                         await log_channel.send(embed=embed, files=[file_txt, file_html])
                     except Exception as e:
                         LOGGER.error("Erro ao enviar transcrição para canal de logs: %s", e, exc_info=e)
+                else:
+                    # Erro crítico: canal de logs não existe
+                    cog = interaction.client.get_cog("TicketCog")
+                    if cog and guild_id:
+                        await cog._send_critical_error_notification(
+                            interaction.guild,
+                            "canal",
+                            "Canal de Logs de Tickets",
+                            str(log_id),
+                            "Sistema de Tickets",
+                            "Transcrições de tickets não podem ser enviadas"
+                        )
             
             # Envia transcrição ao usuário via DM
             try:
@@ -3043,6 +3102,70 @@ class TicketCog(commands.Cog):
     def __init__(self, bot: commands.Bot, db: Database):
         self.bot = bot
         self.db = db
+    
+    async def _send_critical_error_notification(
+        self,
+        guild: discord.Guild,
+        error_type: str,
+        item_name: str,
+        item_id: str,
+        module: str,
+        impact: str
+    ):
+        """Envia notificação de erro crítico para canal de staff."""
+        # Busca configurações para encontrar canal de notificação
+        from .registration import _get_settings
+        channels, _, _ = await _get_settings(self.db, guild.id)
+        
+        target_channel = None
+        
+        # Prioridade 1: Canal de aprovação
+        approval_channel_id = channels.get("approval") or channels.get("channel_approval")
+        if approval_channel_id:
+            target_channel = guild.get_channel(int(approval_channel_id))
+        
+        # Prioridade 2: Canal de advertências
+        if not target_channel:
+            warn_channel_id = channels.get("warnings") or channels.get("channel_warnings")
+            if warn_channel_id:
+                target_channel = guild.get_channel(int(warn_channel_id))
+        
+        # Prioridade 3: Primeiro canal de texto disponível
+        if not target_channel:
+            for channel in guild.text_channels:
+                if channel.permissions_for(guild.me).send_messages:
+                    target_channel = channel
+                    break
+        
+        if not target_channel:
+            LOGGER.error("Não foi possível encontrar canal para enviar notificação de erro crítico em %s", guild.id)
+            return
+        
+        embed = discord.Embed(
+            title="⚠️ Erro Crítico de Configuração",
+            description=f"O {error_type} **{item_name}** (ID: {item_id}) configurado foi deletado ou não existe mais.",
+            color=discord.Color.red()
+        )
+        embed.add_field(
+            name="Ação necessária",
+            value="Use `!setup` para restaurar a configuração.",
+            inline=False
+        )
+        embed.add_field(
+            name="Módulo afetado",
+            value=module,
+            inline=True
+        )
+        embed.add_field(
+            name="Impacto",
+            value=impact,
+            inline=True
+        )
+        
+        try:
+            await target_channel.send(embed=embed)
+        except Exception as e:
+            LOGGER.error("Erro ao enviar notificação de erro crítico: %s", e)
     
     @commands.command(name="ticket_setup")
     @commands.has_permissions(administrator=True)

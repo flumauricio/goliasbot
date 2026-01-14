@@ -348,16 +348,113 @@ class RegistrationCog(commands.Cog):
         self.db = db
         self.config = config
 
+    async def _send_critical_error_notification(
+        self,
+        guild: discord.Guild,
+        channels: dict,
+        error_type: str,
+        item_name: str,
+        item_id: str,
+        module: str,
+        impact: str
+    ):
+        """Envia notificação de erro crítico para canal de staff."""
+        # Prioridade 1: Canal de advertências
+        # Prioridade 2: Canal de aprovação
+        # Prioridade 3: Primeiro canal de texto disponível
+        target_channel = None
+        
+        warn_channel_id = channels.get("warnings") or channels.get("channel_warnings")
+        if warn_channel_id:
+            target_channel = guild.get_channel(int(warn_channel_id))
+        
+        if not target_channel:
+            approval_channel_id = channels.get("approval") or channels.get("channel_approval")
+            if approval_channel_id:
+                target_channel = guild.get_channel(int(approval_channel_id))
+        
+        if not target_channel:
+            # Busca primeiro canal de texto que o bot pode enviar
+            for channel in guild.text_channels:
+                if channel.permissions_for(guild.me).send_messages:
+                    target_channel = channel
+                    break
+        
+        if not target_channel:
+            LOGGER.error("Não foi possível encontrar canal para enviar notificação de erro crítico em %s", guild.id)
+            return
+        
+        embed = discord.Embed(
+            title="⚠️ Erro Crítico de Configuração",
+            description=f"O {error_type} **{item_name}** (ID: {item_id}) configurado foi deletado ou não existe mais.",
+            color=discord.Color.red()
+        )
+        embed.add_field(
+            name="Ação necessária",
+            value="Use `!setup` para restaurar a configuração.",
+            inline=False
+        )
+        embed.add_field(
+            name="Módulo afetado",
+            value=module,
+            inline=True
+        )
+        embed.add_field(
+            name="Impacto",
+            value=impact,
+            inline=True
+        )
+        
+        try:
+            await target_channel.send(embed=embed)
+        except Exception as e:
+            LOGGER.error("Erro ao enviar notificação de erro crítico: %s", e)
+
     @commands.Cog.listener()
     async def on_member_join(self, member: discord.Member):
         channels, roles, _ = await _get_settings(self.db, member.guild.id)
         role_id = roles.get("set") or roles.get("role_set")
         role_member_id = roles.get("member") or roles.get("role_member")
+        
+        # Verifica se cargo SET existe
+        if role_id:
+            role = member.guild.get_role(int(role_id))
+            if not role:
+                # Cargo SET não existe - erro crítico
+                await self._send_critical_error_notification(
+                    member.guild,
+                    channels,
+                    "cargo",
+                    "SET",
+                    str(role_id),
+                    "Sistema de Cadastro",
+                    "Novos membros não receberão o cargo SET automaticamente"
+                )
+                return
+        
+        # Verifica se cargo Membro existe (se configurado)
+        if role_member_id:
+            member_role = member.guild.get_role(int(role_member_id))
+            if not member_role:
+                # Cargo Membro não existe - erro crítico
+                await self._send_critical_error_notification(
+                    member.guild,
+                    channels,
+                    "cargo",
+                    "Membro",
+                    str(role_member_id),
+                    "Sistema de Cadastro",
+                    "Membros aprovados não receberão o cargo de Membro"
+                )
+                return
+        
         if not role_id:
             return
+        
         role = member.guild.get_role(int(role_id))
         if not role:
             return
+        
         try:
             # Remove eventual cargo de membro se já veio atribuído por engano.
             if role_member_id:
