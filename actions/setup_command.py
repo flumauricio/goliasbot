@@ -790,6 +790,30 @@ class MainDashboardView(discord.ui.View):
         view = HierarchySetupView(self.bot, self.db, interaction.guild, parent_view=self)
         embed = await view.build_embed()
         await interaction.response.edit_message(embed=embed, view=view)
+    
+    @discord.ui.button(label="🤖 Automod", style=discord.ButtonStyle.primary, row=3)
+    async def open_automod(self, interaction: discord.Interaction, button: discord.ui.Button):
+        """Abre configuração de Automod."""
+        if not interaction.guild:
+            await interaction.response.send_message("❌ Use este comando em um servidor.", ephemeral=True)
+            return
+        
+        from .automod.config_view import AutomodConfigView
+        view = AutomodConfigView(self.bot, self.db, interaction.guild, parent_view=self)
+        embed = await view.build_embed()
+        await interaction.response.edit_message(embed=embed, view=view)
+    
+    @discord.ui.button(label="📺 Notificações Live", style=discord.ButtonStyle.primary, row=3)
+    async def open_streams(self, interaction: discord.Interaction, button: discord.ui.Button):
+        """Abre configuração de notificações de live."""
+        if not interaction.guild:
+            await interaction.response.send_message("❌ Use este comando em um servidor.", ephemeral=True)
+            return
+        
+        from .streams.config_view import StreamsConfigView
+        view = StreamsConfigView(self.bot, self.db, interaction.guild, parent_view=self)
+        embed = await view.build_embed()
+        await interaction.response.edit_message(embed=embed, view=view)
 
 
 # ===== Wizard Views =====

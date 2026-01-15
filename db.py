@@ -754,6 +754,122 @@ class Database:
                 ON hierarchy_rate_limit_tracking(guild_id, window_start)
                 """
             )
+            
+            # ===== TABELAS DO SISTEMA DE AUTOMOD =====
+            
+            # Tabela de configuração do automod
+            await cur.execute(
+                """
+                CREATE TABLE IF NOT EXISTS automod_config (
+                    guild_id TEXT PRIMARY KEY,
+                    enabled INTEGER NOT NULL DEFAULT 0,
+                    spam_threshold INTEGER NOT NULL DEFAULT 5,
+                    spam_window_seconds INTEGER NOT NULL DEFAULT 10,
+                    similarity_threshold REAL NOT NULL DEFAULT 0.85,
+                    mention_limit INTEGER NOT NULL DEFAULT 5,
+                    filter_invites INTEGER NOT NULL DEFAULT 1,
+                    first_action TEXT NOT NULL DEFAULT 'warn',
+                    second_action TEXT NOT NULL DEFAULT 'timeout',
+                    third_action TEXT NOT NULL DEFAULT 'ban',
+                    timeout_duration INTEGER NOT NULL DEFAULT 600,
+                    logs_channel_id TEXT,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+                """
+            )
+            
+            # Tabela de whitelist do automod (roles e canais ignorados)
+            await cur.execute(
+                """
+                CREATE TABLE IF NOT EXISTS automod_whitelist (
+                    guild_id TEXT NOT NULL,
+                    item_id TEXT NOT NULL,
+                    item_type TEXT NOT NULL,
+                    PRIMARY KEY (guild_id, item_id, item_type)
+                )
+                """
+            )
+            
+            # Tabela de violações do automod (com created_at para cleanup)
+            await cur.execute(
+                """
+                CREATE TABLE IF NOT EXISTS automod_violations (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    guild_id TEXT NOT NULL,
+                    user_id TEXT NOT NULL,
+                    violation_type TEXT NOT NULL,
+                    message_content TEXT,
+                    action_taken TEXT NOT NULL,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+                """
+            )
+            
+            # Índices para automod_violations
+            await cur.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_user_violations 
+                ON automod_violations(guild_id, user_id, timestamp)
+                """
+            )
+            
+            await cur.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_created_at 
+                ON automod_violations(created_at)
+                """
+            )
+            
+            # ===== TABELAS DO SISTEMA DE NOTIFICAÇÕES DE LIVE =====
+            
+            # Tabela de configuração de streams
+            await cur.execute(
+                """
+                CREATE TABLE IF NOT EXISTS stream_config (
+                    guild_id TEXT PRIMARY KEY,
+                    enabled INTEGER NOT NULL DEFAULT 0,
+                    announcement_channel_id TEXT,
+                    edit_on_end INTEGER NOT NULL DEFAULT 1,
+                    cooldown_minutes INTEGER NOT NULL DEFAULT 10,
+                    ping_role_id TEXT,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+                """
+            )
+            
+            # Tabela de canais monitorados (Twitch/YouTube)
+            await cur.execute(
+                """
+                CREATE TABLE IF NOT EXISTS stream_channels (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    guild_id TEXT NOT NULL,
+                    platform TEXT NOT NULL,
+                    channel_name TEXT NOT NULL,
+                    channel_id TEXT,
+                    is_active INTEGER NOT NULL DEFAULT 1,
+                    UNIQUE(guild_id, platform, channel_name)
+                )
+                """
+            )
+            
+            # Tabela de anúncios enviados
+            await cur.execute(
+                """
+                CREATE TABLE IF NOT EXISTS stream_announcements (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    guild_id TEXT NOT NULL,
+                    stream_channel_id INTEGER NOT NULL,
+                    message_id TEXT,
+                    started_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    ended_at TIMESTAMP,
+                    peak_viewers INTEGER DEFAULT 0,
+                    title TEXT,
+                    thumbnail_url TEXT,
+                    FOREIGN KEY (stream_channel_id) REFERENCES stream_channels(id) ON DELETE CASCADE
+                )
+                """
+            )
 
         await self._conn.commit()
 
@@ -4089,6 +4205,375 @@ class Database:
             await cur.execute(
                 "DELETE FROM config_backups WHERE id = ?",
                 (backup_id,)
+            )
+        await self._conn.commit()
+    
+    # ===== MÉTODOS DO SISTEMA DE AUTOMOD =====
+    
+    async def get_automod_config(self, guild_id: int) -> Dict[str, Any]:
+        """Busca configuração do automod."""
+        if not self._conn:
+            raise RuntimeError("Database não inicializado. Chame initialize() primeiro.")
+        
+        async with self._conn.cursor() as cur:
+            await cur.execute(
+                "SELECT * FROM automod_config WHERE guild_id = ?",
+                (str(guild_id),)
+            )
+            row = await cur.fetchone()
+            
+            if not row:
+                return {}
+            
+            return dict(row)
+    
+    async def set_automod_config(self, guild_id: int, **kwargs) -> None:
+        """Atualiza configuração do automod."""
+        if not self._conn:
+            raise RuntimeError("Database não inicializado. Chame initialize() primeiro.")
+        
+        valid_fields = {
+            'enabled', 'spam_threshold', 'spam_window_seconds', 'similarity_threshold',
+            'mention_limit', 'filter_invites', 'first_action', 'second_action',
+            'third_action', 'timeout_duration', 'logs_channel_id'
+        }
+        
+        # Filtra apenas campos válidos
+        filtered = {k: v for k, v in kwargs.items() if k in valid_fields}
+        
+        if not filtered:
+            return
+        
+        # Busca config atual para merge
+        current = await self.get_automod_config(guild_id)
+        merged = {**current, **filtered}
+        
+        async with self._conn.cursor() as cur:
+            await cur.execute(
+                """
+                INSERT INTO automod_config (
+                    guild_id, enabled, spam_threshold, spam_window_seconds,
+                    similarity_threshold, mention_limit, filter_invites,
+                    first_action, second_action, third_action,
+                    timeout_duration, logs_channel_id
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(guild_id) DO UPDATE SET
+                    enabled = excluded.enabled,
+                    spam_threshold = excluded.spam_threshold,
+                    spam_window_seconds = excluded.spam_window_seconds,
+                    similarity_threshold = excluded.similarity_threshold,
+                    mention_limit = excluded.mention_limit,
+                    filter_invites = excluded.filter_invites,
+                    first_action = excluded.first_action,
+                    second_action = excluded.second_action,
+                    third_action = excluded.third_action,
+                    timeout_duration = excluded.timeout_duration,
+                    logs_channel_id = excluded.logs_channel_id,
+                    updated_at = CURRENT_TIMESTAMP
+                """,
+                (
+                    str(guild_id),
+                    merged.get('enabled', 0),
+                    merged.get('spam_threshold', 5),
+                    merged.get('spam_window_seconds', 10),
+                    merged.get('similarity_threshold', 0.85),
+                    merged.get('mention_limit', 5),
+                    merged.get('filter_invites', 1),
+                    merged.get('first_action', 'warn'),
+                    merged.get('second_action', 'timeout'),
+                    merged.get('third_action', 'ban'),
+                    merged.get('timeout_duration', 600),
+                    str(merged.get('logs_channel_id')) if merged.get('logs_channel_id') else None
+                )
+            )
+        await self._conn.commit()
+    
+    async def get_automod_whitelist(self, guild_id: int) -> Dict[str, list]:
+        """Busca whitelist do automod (roles e canais)."""
+        if not self._conn:
+            raise RuntimeError("Database não inicializado. Chame initialize() primeiro.")
+        
+        async with self._conn.cursor() as cur:
+            await cur.execute(
+                "SELECT item_id, item_type FROM automod_whitelist WHERE guild_id = ?",
+                (str(guild_id),)
+            )
+            rows = await cur.fetchall()
+            
+            roles = []
+            channels = []
+            
+            for row in rows:
+                if row['item_type'] == 'role':
+                    roles.append(row['item_id'])
+                elif row['item_type'] == 'channel':
+                    channels.append(row['item_id'])
+            
+            return {'roles': roles, 'channels': channels}
+    
+    async def add_automod_whitelist_item(
+        self, guild_id: int, item_id: str, item_type: str
+    ) -> None:
+        """Adiciona item à whitelist do automod."""
+        if not self._conn:
+            raise RuntimeError("Database não inicializado. Chame initialize() primeiro.")
+        
+        if item_type not in ('role', 'channel'):
+            raise ValueError("item_type deve ser 'role' ou 'channel'")
+        
+        async with self._conn.cursor() as cur:
+            await cur.execute(
+                """
+                INSERT OR IGNORE INTO automod_whitelist (guild_id, item_id, item_type)
+                VALUES (?, ?, ?)
+                """,
+                (str(guild_id), str(item_id), item_type)
+            )
+        await self._conn.commit()
+    
+    async def remove_automod_whitelist_item(
+        self, guild_id: int, item_id: str, item_type: str
+    ) -> None:
+        """Remove item da whitelist do automod."""
+        if not self._conn:
+            raise RuntimeError("Database não inicializado. Chame initialize() primeiro.")
+        
+        async with self._conn.cursor() as cur:
+            await cur.execute(
+                """
+                DELETE FROM automod_whitelist
+                WHERE guild_id = ? AND item_id = ? AND item_type = ?
+                """,
+                (str(guild_id), str(item_id), item_type)
+            )
+        await self._conn.commit()
+    
+    async def add_automod_violation(
+        self,
+        guild_id: str,
+        user_id: str,
+        violation_type: str,
+        content: str,
+        action: str
+    ) -> None:
+        """Adiciona violação do automod (async e não-bloqueante)."""
+        if not self._conn:
+            raise RuntimeError("Database não inicializado. Chame initialize() primeiro.")
+        
+        from datetime import datetime
+        
+        async with self._conn.cursor() as cur:
+            await cur.execute(
+                """
+                INSERT INTO automod_violations 
+                (guild_id, user_id, violation_type, message_content, action_taken, created_at)
+                VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                (guild_id, user_id, violation_type, content[:200], action, datetime.utcnow())
+            )
+        await self._conn.commit()
+    
+    async def cleanup_old_violations(self, days: int = 30) -> int:
+        """Remove violações com mais de N dias."""
+        if not self._conn:
+            raise RuntimeError("Database não inicializado. Chame initialize() primeiro.")
+        
+        from datetime import datetime, timedelta
+        
+        cutoff_date = datetime.utcnow() - timedelta(days=days)
+        
+        async with self._conn.cursor() as cur:
+            await cur.execute(
+                "DELETE FROM automod_violations WHERE created_at < ?",
+                (cutoff_date,)
+            )
+            deleted = cur.rowcount
+        
+        await self._conn.commit()
+        return deleted
+    
+    # ===== MÉTODOS DO SISTEMA DE NOTIFICAÇÕES DE LIVE =====
+    
+    async def get_stream_config(self, guild_id: int) -> Dict[str, Any]:
+        """Busca configuração de streams."""
+        if not self._conn:
+            raise RuntimeError("Database não inicializado. Chame initialize() primeiro.")
+        
+        async with self._conn.cursor() as cur:
+            await cur.execute(
+                "SELECT * FROM stream_config WHERE guild_id = ?",
+                (str(guild_id),)
+            )
+            row = await cur.fetchone()
+            
+            if not row:
+                return {}
+            
+            return dict(row)
+    
+    async def set_stream_config(self, guild_id: int, **kwargs) -> None:
+        """Atualiza configuração de streams."""
+        if not self._conn:
+            raise RuntimeError("Database não inicializado. Chame initialize() primeiro.")
+        
+        valid_fields = {
+            'enabled', 'announcement_channel_id', 'edit_on_end',
+            'cooldown_minutes', 'ping_role_id'
+        }
+        
+        # Filtra apenas campos válidos
+        filtered = {k: v for k, v in kwargs.items() if k in valid_fields}
+        
+        if not filtered:
+            return
+        
+        # Busca config atual para merge
+        current = await self.get_stream_config(guild_id)
+        merged = {**current, **filtered}
+        
+        async with self._conn.cursor() as cur:
+            await cur.execute(
+                """
+                INSERT INTO stream_config (
+                    guild_id, enabled, announcement_channel_id,
+                    edit_on_end, cooldown_minutes, ping_role_id
+                )
+                VALUES (?, ?, ?, ?, ?, ?)
+                ON CONFLICT(guild_id) DO UPDATE SET
+                    enabled = excluded.enabled,
+                    announcement_channel_id = excluded.announcement_channel_id,
+                    edit_on_end = excluded.edit_on_end,
+                    cooldown_minutes = excluded.cooldown_minutes,
+                    ping_role_id = excluded.ping_role_id,
+                    updated_at = CURRENT_TIMESTAMP
+                """,
+                (
+                    str(guild_id),
+                    merged.get('enabled', 0),
+                    str(merged.get('announcement_channel_id')) if merged.get('announcement_channel_id') else None,
+                    merged.get('edit_on_end', 1),
+                    merged.get('cooldown_minutes', 10),
+                    str(merged.get('ping_role_id')) if merged.get('ping_role_id') else None
+                )
+            )
+        await self._conn.commit()
+    
+    async def get_stream_channels(self, guild_id: int) -> list:
+        """Busca canais monitorados de um servidor."""
+        if not self._conn:
+            raise RuntimeError("Database não inicializado. Chame initialize() primeiro.")
+        
+        async with self._conn.cursor() as cur:
+            await cur.execute(
+                """
+                SELECT id, guild_id, platform, channel_name, channel_id, is_active
+                FROM stream_channels
+                WHERE guild_id = ?
+                """,
+                (str(guild_id),)
+            )
+            rows = await cur.fetchall()
+            return [dict(row) for row in rows]
+    
+    async def add_stream_channel(
+        self, guild_id: int, platform: str, channel_name: str, channel_id: str = None
+    ) -> int:
+        """Adiciona canal monitorado."""
+        if not self._conn:
+            raise RuntimeError("Database não inicializado. Chame initialize() primeiro.")
+        
+        if platform not in ('twitch', 'youtube'):
+            raise ValueError("platform deve ser 'twitch' ou 'youtube'")
+        
+        async with self._conn.cursor() as cur:
+            await cur.execute(
+                """
+                INSERT INTO stream_channels (guild_id, platform, channel_name, channel_id)
+                VALUES (?, ?, ?, ?)
+                ON CONFLICT(guild_id, platform, channel_name) DO UPDATE SET
+                    channel_id = excluded.channel_id,
+                    is_active = 1
+                """,
+                (str(guild_id), platform, channel_name, channel_id)
+            )
+            await cur.execute("SELECT last_insert_rowid()")
+            row = await cur.fetchone()
+            stream_id = row[0] if row else None
+        
+        await self._conn.commit()
+        return stream_id
+    
+    async def remove_stream_channel(self, channel_id: int) -> None:
+        """Remove canal monitorado."""
+        if not self._conn:
+            raise RuntimeError("Database não inicializado. Chame initialize() primeiro.")
+        
+        async with self._conn.cursor() as cur:
+            await cur.execute(
+                "DELETE FROM stream_channels WHERE id = ?",
+                (channel_id,)
+            )
+        await self._conn.commit()
+    
+    async def get_guilds_with_stream_config(self) -> list:
+        """Busca todos os servidores com sistema de streams ativo."""
+        if not self._conn:
+            raise RuntimeError("Database não inicializado. Chame initialize() primeiro.")
+        
+        async with self._conn.cursor() as cur:
+            await cur.execute(
+                """
+                SELECT guild_id
+                FROM stream_config
+                WHERE enabled = 1
+                """
+            )
+            rows = await cur.fetchall()
+            return [{'guild_id': row['guild_id']} for row in rows]
+    
+    async def add_stream_announcement(
+        self,
+        guild_id: int,
+        stream_channel_id: int,
+        message_id: int,
+        title: str,
+        thumbnail_url: str
+    ) -> None:
+        """Registra anúncio de live."""
+        if not self._conn:
+            raise RuntimeError("Database não inicializado. Chame initialize() primeiro.")
+        
+        async with self._conn.cursor() as cur:
+            await cur.execute(
+                """
+                INSERT INTO stream_announcements
+                (guild_id, stream_channel_id, message_id, title, thumbnail_url)
+                VALUES (?, ?, ?, ?, ?)
+                """,
+                (str(guild_id), stream_channel_id, str(message_id), title, thumbnail_url)
+            )
+        await self._conn.commit()
+    
+    async def update_stream_announcement_ended(
+        self,
+        guild_id: int,
+        stream_id: int,
+        peak_viewers: int,
+        duration_minutes: int
+    ) -> None:
+        """Atualiza anúncio quando stream encerra."""
+        if not self._conn:
+            raise RuntimeError("Database não inicializado. Chame initialize() primeiro.")
+        
+        async with self._conn.cursor() as cur:
+            await cur.execute(
+                """
+                UPDATE stream_announcements
+                SET ended_at = CURRENT_TIMESTAMP, peak_viewers = ?
+                WHERE guild_id = ? AND stream_channel_id = ? AND ended_at IS NULL
+                """,
+                (peak_viewers, str(guild_id), stream_id)
             )
         await self._conn.commit()
 

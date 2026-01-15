@@ -55,6 +55,8 @@ async def build_bot() -> commands.Bot:
                 'actions.analytics',
                 'actions.hierarchy.promotion_engine',
                 'actions.hierarchy.commands',
+                'actions.automod.cog',
+                'actions.streams.cog',
             ]
             
             for ext in extensions:
