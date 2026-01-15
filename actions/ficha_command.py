@@ -1,8 +1,9 @@
 import asyncio
 import logging
 import math
+from dataclasses import dataclass
 from datetime import timedelta, datetime
-from typing import Optional, Dict, Any, Tuple
+from typing import Optional, Dict, Any, Tuple, List
 
 import discord
 from discord.ext import commands
@@ -14,6 +15,76 @@ from .registration import _get_settings
 LOGGER = logging.getLogger(__name__)
 
 # Usa o set global do bot para prevenir execução duplicada
+
+
+# ===== HELPERS =====
+
+class EmbedBuilder:
+    """Helper para construir embeds com validação automática de limites do Discord."""
+    
+    MAX_EMBED_LENGTH = 6000
+    MAX_FIELD_LENGTH = 1024
+    MAX_FIELDS = 25
+    
+    def __init__(self, title: str = "", color: discord.Color = discord.Color.blue()):
+        self.embed = discord.Embed(title=title, color=color)
+        self.total_length = len(title)
+        self.field_count = 0
+    
+    def add_field_safe(
+        self,
+        name: str,
+        value: str,
+        inline: bool = False,
+        truncate: bool = True
+    ) -> bool:
+        """
+        Adiciona field validando limites do Discord.
+        
+        Returns:
+            True se adicionado com sucesso, False se excedeu limites
+        """
+        if self.field_count >= self.MAX_FIELDS:
+            LOGGER.warning(f"Embed excedeu limite de {self.MAX_FIELDS} fields")
+            return False
+        
+        if len(value) > self.MAX_FIELD_LENGTH:
+            if truncate:
+                value = value[:self.MAX_FIELD_LENGTH - 20] + "\n\n*(truncado)*"
+            else:
+                LOGGER.warning(f"Field '{name}' excedeu {self.MAX_FIELD_LENGTH} chars")
+                return False
+        
+        field_length = len(name) + len(value)
+        if self.total_length + field_length > self.MAX_EMBED_LENGTH:
+            LOGGER.warning(f"Embed excedeu limite de {self.MAX_EMBED_LENGTH} chars")
+            return False
+        
+        self.embed.add_field(name=name, value=value, inline=inline)
+        self.total_length += field_length
+        self.field_count += 1
+        return True
+    
+    def set_description_safe(self, description: str, truncate: bool = True):
+        """Define descrição validando limite de 4096 chars."""
+        if len(description) > 4096:
+            if truncate:
+                description = description[:4090] + "..."
+            else:
+                raise ValueError("Description excede 4096 chars")
+        
+        self.embed.description = description
+        self.total_length += len(description)
+
+
+@dataclass
+class AdvStatus:
+    """Status de advertências de um membro."""
+    has_adv1: bool
+    has_adv2: bool
+    is_banned: bool
+    recent_warnings: List[Dict[str, Any]]
+    total_warnings: int
 
 
 # ===== MODAIS =====
@@ -1187,6 +1258,278 @@ class FichaCog(commands.Cog):
     def __init__(self, bot: commands.Bot, db: Database):
         self.bot = bot
         self.db = db
+        
+        # Cache compartilhado de hierarquia
+        try:
+            from .hierarchy.cache import HierarchyCache
+            from .hierarchy.repository import HierarchyRepository
+            
+            self._hierarchy_cache = HierarchyCache()
+            self._repository = HierarchyRepository(self.db, self._hierarchy_cache)
+        except ImportError:
+            # Módulo de hierarquia não está disponível
+            self._hierarchy_cache = None
+            self._repository = None
+        
+        # Cache de settings (TTL: 5 minutos)
+        self._settings_cache: Dict[int, Tuple[Dict, float]] = {}
+        self._settings_ttl = 300  # segundos
+    
+    async def _get_cached_settings(self, guild_id: int) -> Dict:
+        """Retorna settings com cache de 5 minutos."""
+        import time
+        now = time.time()
+        
+        if guild_id in self._settings_cache:
+            settings, cached_at = self._settings_cache[guild_id]
+            if now - cached_at < self._settings_ttl:
+                return settings
+        
+        # Buscar do banco
+        settings = await self.db.get_settings(guild_id)
+        self._settings_cache[guild_id] = (settings, now)
+        return settings
+    
+    async def _get_adv_status(
+        self,
+        guild: discord.Guild,
+        member: discord.Member
+    ) -> Optional[AdvStatus]:
+        """Busca status completo de advertências do membro."""
+        try:
+            settings = await self._get_cached_settings(guild.id)
+            
+            role_adv1_id = settings.get("role_adv1")
+            role_adv2_id = settings.get("role_adv2")
+            
+            if not (role_adv1_id or role_adv2_id):
+                return None
+            
+            role_adv1 = guild.get_role(int(role_adv1_id)) if role_adv1_id else None
+            role_adv2 = guild.get_role(int(role_adv2_id)) if role_adv2_id else None
+            
+            has_adv1 = role_adv1 in member.roles if role_adv1 else False
+            has_adv2 = role_adv2 in member.roles if role_adv2 else False
+            
+            all_warnings = await self.db.get_member_logs(
+                guild.id,
+                member.id,
+                log_type="adv",
+                limit=50
+            )
+            
+            ban_log = None
+            warnings_only = []
+            
+            for log in all_warnings:
+                content = log.get("content", "")
+                if "Banimento" in content or "banido" in content.lower():
+                    ban_log = log
+                else:
+                    warnings_only.append(log)
+            
+            return AdvStatus(
+                has_adv1=has_adv1,
+                has_adv2=has_adv2,
+                is_banned=ban_log is not None,
+                recent_warnings=warnings_only[:5],
+                total_warnings=len(warnings_only)
+            )
+        except Exception as e:
+            LOGGER.error(f"Erro ao buscar status de ADV: {e}", exc_info=True)
+            return None
+    
+    async def _get_next_config(self, guild_id: int, current_role_id: int):
+        """Helper para buscar próximo cargo na hierarquia."""
+        if not self._repository:
+            return None
+        
+        current = await self._repository.get_config(guild_id, current_role_id)
+        if not current:
+            return None
+        # Próximo cargo = level_order - 1 (Nível 1 é o mais alto, então progredimos diminuindo)
+        return await self._repository.get_config_by_level(guild_id, current.level_order - 1)
+    
+    async def _build_hierarchy_section(
+        self,
+        guild: discord.Guild,
+        member: discord.Member
+    ) -> Optional[str]:
+        """Constrói seção de hierarquia com progresso detalhado."""
+        try:
+            if not self._repository:
+                return None
+            
+            user_status = await self._repository.get_user_status(guild.id, member.id)
+            
+            if not user_status or not user_status.current_role_id:
+                return None
+            
+            current_role = guild.get_role(user_status.current_role_id)
+            if not current_role:
+                return None
+            
+            # Queries paralelas
+            current_config, next_config = await asyncio.gather(
+                self._repository.get_config(guild.id, user_status.current_role_id),
+                self._get_next_config(guild.id, user_status.current_role_id),
+                return_exceptions=True
+            )
+            
+            if isinstance(current_config, Exception) or not current_config:
+                return "⚠️ *Erro ao carregar dados de hierarquia*"
+            
+            text = f"**Cargo Atual:** {current_role.mention} (Nível {current_config.level_order})\n"
+            
+            if isinstance(next_config, Exception) or not next_config:
+                text += "\n*Nível máximo atingido*"
+                return text
+            
+            next_role = guild.get_role(next_config.role_id)
+            if not next_role:
+                return text
+            
+            text += f"**Próximo Cargo:** {next_role.mention} (Nível {next_config.level_order})\n\n"
+            
+            # Usa método estruturado
+            from .hierarchy.promotion_engine import HierarchyPromotionCog
+            temp_cog = HierarchyPromotionCog(self.bot, self.db)
+            eligibility = await temp_cog.check_requirements_structured(guild, member.id, next_config)
+            
+            # Requisitos
+            text += "**📋 Requisitos:**\n"
+            for req in eligibility.requirements:
+                status = "✅" if req.met else "❌"
+                if req.name == "Call":
+                    text += f"• {req.emoji} {req.name}: {req.current}h/{req.required}h {status}\n"
+                elif req.name == "Tempo no Cargo":
+                    text += f"• {req.emoji} {req.name}: {req.current}/{req.required} dias {status}\n"
+                else:
+                    text += f"• {req.emoji} {req.name}: {req.current:,}/{req.required:,} {status}\n"
+            
+            # Barra de progresso
+            progress = eligibility.overall_progress
+            filled = progress // 10
+            bar = "▰" * filled + "▱" * (10 - filled)
+            text += f"\n**📊 Progresso:** {bar} {progress}%\n"
+            
+            # Vagas (se limitado)
+            if next_config.max_vacancies > 0:
+                occupied = len([m for m in guild.members if next_role in m.roles])
+                text += f"\n**Vagas:** {occupied}/{next_config.max_vacancies}"
+            
+            text += f"\n\n{eligibility.summary}"
+            
+            return text
+            
+        except ImportError:
+            return "⚠️ *Sistema de hierarquia não configurado*"
+        except asyncio.TimeoutError:
+            LOGGER.error(f"Timeout ao buscar hierarquia para {member.id}")
+            return "⏱️ *Timeout ao carregar hierarquia*"
+        except Exception as e:
+            LOGGER.error(f"Erro ao construir seção de hierarquia: {e}", exc_info=True)
+            return "❌ *Erro ao carregar dados de hierarquia*"
+    
+    async def _build_adv_section(
+        self,
+        guild: discord.Guild,
+        member: discord.Member
+    ) -> Optional[str]:
+        """Constrói seção de advertências com cargos e histórico."""
+        status = await self._get_adv_status(guild, member)
+        
+        if not status or not (status.has_adv1 or status.has_adv2 or status.recent_warnings):
+            return None
+        
+        text = ""
+        
+        if status.has_adv1 or status.has_adv2:
+            roles_text = []
+            settings = await self._get_cached_settings(guild.id)
+            
+            if status.has_adv1 and settings.get("role_adv1"):
+                role = guild.get_role(int(settings["role_adv1"]))
+                if role:
+                    roles_text.append(role.mention)
+            
+            if status.has_adv2 and settings.get("role_adv2"):
+                role = guild.get_role(int(settings["role_adv2"]))
+                if role:
+                    roles_text.append(role.mention)
+            
+            if roles_text:
+                text += f"**Cargos Ativos:** {', '.join(roles_text)}\n"
+        
+        if status.recent_warnings:
+            text += f"\n**Histórico** ({status.total_warnings} total):\n"
+            
+            for warning in status.recent_warnings[:3]:
+                timestamp = warning.get("timestamp", "")
+                content = warning.get("content", "")
+                author_id = int(warning.get("author_id", 0))
+                author = guild.get_member(author_id)
+                author_name = author.display_name if author else f"ID:{author_id}"
+                
+                if len(content) > 80:
+                    content = content[:77] + "..."
+                
+                try:
+                    dt = datetime.fromisoformat(timestamp.replace('Z', '+00:00'))
+                    date_str = dt.strftime("%d/%m/%Y")
+                except:
+                    date_str = "N/A"
+                
+                text += f"• {date_str} - {content} (@{author_name})\n"
+            
+            if status.total_warnings > 3:
+                remaining = status.total_warnings - 3
+                text += f"\n*...e mais {remaining} advertência(s)*"
+        
+        if status.is_banned:
+            text += "\n\n🚫 **Membro foi banido após ADV2**"
+        
+        return text if text else None
+    
+    async def _build_other_roles_section(
+        self,
+        guild: discord.Guild,
+        member: discord.Member,
+        exclude_role_ids: List[int]
+    ) -> str:
+        """Lista outros cargos excluindo hierarquia e advertências."""
+        other_roles = [
+            role for role in member.roles
+            if role.id not in exclude_role_ids and role.name != "@everyone"
+        ]
+        
+        if not other_roles:
+            return "Nenhum"
+        
+        # Ordena por posição
+        other_roles.sort(key=lambda r: r.position, reverse=True)
+        
+        roles_text = ", ".join([role.mention for role in other_roles])
+        
+        # Trunca se muito longo
+        if len(roles_text) > 900:
+            visible_roles = []
+            total_length = 0
+            remaining = 0
+            
+            for role in other_roles:
+                role_mention = role.mention + ", "
+                if total_length + len(role_mention) <= 900:
+                    visible_roles.append(role.mention)
+                    total_length += len(role_mention)
+                else:
+                    remaining += 1
+            
+            roles_text = ", ".join(visible_roles)
+            if remaining > 0:
+                roles_text += f"\n*...e mais {remaining} cargo(s)*"
+        
+        return roles_text
     
     async def _check_staff_permissions(self, member: discord.Member, guild: discord.Guild) -> bool:
         """Verifica se o membro é Staff (admin ou tem cargo configurado)."""
@@ -1351,18 +1694,20 @@ class FichaCog(commands.Cog):
         Esta função foi estruturada para ser facilmente extensível.
         """
         guild = member.guild
-        embed = discord.Embed(
+        
+        # Usa EmbedBuilder para validação automática de limites
+        builder = EmbedBuilder(
             title=f"📋 Ficha de {member.display_name}",
-            color=member.color if member.color != discord.Color.default() else discord.Color.blue(),
-            timestamp=discord.utils.utcnow()
+            color=member.color if member.color != discord.Color.default() else discord.Color.blue()
         )
         
-        # Avatar
-        embed.set_thumbnail(url=member.display_avatar.url)
-        embed.set_footer(text="Golias Bot • Ficha do Membro")
+        # Avatar e footer
+        builder.embed.set_thumbnail(url=member.display_avatar.url)
+        builder.embed.set_footer(text="Golias Bot • Ficha do Membro")
+        builder.embed.timestamp = discord.utils.utcnow()
         
         # ===== INFORMAÇÕES BÁSICAS DO DISCORD =====
-        embed.add_field(
+        builder.add_field_safe(
             name="👤 Identificação",
             value=f"**Nome:** {member.name}\n"
                   f"**Apelido:** {member.display_name}\n"
@@ -1378,7 +1723,7 @@ class FichaCog(commands.Cog):
         
         account_age_str = f"{account_years} anos, {account_months} meses" if account_years > 0 else f"{account_months} meses"
         
-        embed.add_field(
+        builder.add_field_safe(
             name="⏰ Conta Discord",
             value=f"**Criada em:** {discord.utils.format_dt(member.created_at, style='R')}\n"
                   f"**Idade da conta:** {account_age_str}",
@@ -1394,14 +1739,14 @@ class FichaCog(commands.Cog):
             
             server_age_str = f"{server_years} anos, {server_months} meses" if server_years > 0 else f"{server_months} meses"
             
-            embed.add_field(
+            builder.add_field_safe(
                 name="🏠 Servidor",
                 value=f"**Entrou em:** {discord.utils.format_dt(member.joined_at, style='R')}\n"
                       f"**Tempo no servidor:** {server_age_str}",
                 inline=True
             )
         else:
-            embed.add_field(
+            builder.add_field_safe(
                 name="🏠 Servidor",
                 value="*Data de entrada não disponível*",
                 inline=True
@@ -1413,7 +1758,7 @@ class FichaCog(commands.Cog):
             recruiter_id = registration_data.get("recruiter_id", "")
             
             if server_id:
-                embed.add_field(
+                builder.add_field_safe(
                     name="🎮 ID no Servidor",
                     value=f"`{server_id}`",
                     inline=True
@@ -1422,7 +1767,7 @@ class FichaCog(commands.Cog):
             if recruiter_id:
                 recruiter = guild.get_member(int(recruiter_id)) if recruiter_id.isdigit() else None
                 recruiter_mention = recruiter.mention if recruiter else f"`{recruiter_id}`"
-                embed.add_field(
+                builder.add_field_safe(
                     name="👥 Recrutado por",
                     value=recruiter_mention,
                     inline=True
@@ -1435,7 +1780,7 @@ class FichaCog(commands.Cog):
                     left, right = name.split("|", 1)
                     server_id = right.strip()
                     if server_id:
-                        embed.add_field(
+                        builder.add_field_safe(
                             name="🎮 ID no Servidor",
                             value=f"`{server_id}`",
                             inline=True
@@ -1443,26 +1788,7 @@ class FichaCog(commands.Cog):
                 except ValueError:
                     pass
         
-        # ===== CARGOS =====
-        roles = [role for role in member.roles if not role.is_default()]
-        if roles:
-            # Ordena por posição (hierarquia)
-            roles_sorted = sorted(roles, key=lambda r: r.position, reverse=True)
-            roles_str = " ".join([role.mention for role in roles_sorted[:10]])  # Limite de 10 cargos
-            if len(roles_sorted) > 10:
-                roles_str += f"\n*+ {len(roles_sorted) - 10} cargo(s) adicional(is)*"
-            
-            embed.add_field(
-                name=f"🎭 Cargos ({len(roles_sorted)})",
-                value=roles_str if roles_str else "Nenhum cargo",
-                inline=False
-            )
-        else:
-            embed.add_field(
-                name="🎭 Cargos",
-                value="*Sem cargos atribuídos*",
-                inline=False
-            )
+        # ===== CARGOS (SERÃO ADICIONADOS POR SEÇÃO MAIS ABAIXO) =====
         
         # ===== STATUS E ATIVIDADE =====
         status_emoji = {
@@ -1486,7 +1812,7 @@ class FichaCog(commands.Cog):
                     activity_str = f"🎵 {activity.title} - {activity.artist}"
                     break
         
-        embed.add_field(
+        builder.add_field_safe(
             name="📊 Status",
             value=f"**Status:** {status_str} {str(member.status).title()}\n"
                   f"**Atividade:** {activity_str}",
@@ -1499,7 +1825,7 @@ class FichaCog(commands.Cog):
             if stats:
                 participations = stats.get("participations", 0)
                 total_earned = stats.get("total_earned", 0.0)
-                embed.add_field(
+                builder.add_field_safe(
                     name="📊 Histórico de Ações",
                     value=(
                         f"**Participações:** {participations}\n"
@@ -1508,14 +1834,14 @@ class FichaCog(commands.Cog):
                     inline=True
                 )
             else:
-                embed.add_field(
+                builder.add_field_safe(
                     name="📊 Histórico de Ações",
                     value="Nenhuma participação registrada",
                     inline=True
                 )
         except Exception as exc:
             LOGGER.warning("Erro ao buscar estatísticas de ações: %s", exc)
-            embed.add_field(
+            builder.add_field_safe(
                 name="📊 Histórico de Ações",
                 value="Erro ao carregar dados",
                 inline=True
@@ -1526,14 +1852,14 @@ class FichaCog(commands.Cog):
             from .voice_utils import format_time
             total_seconds = await self.db.get_total_voice_time(guild.id, member.id)
             time_str = format_time(total_seconds)
-            embed.add_field(
+            builder.add_field_safe(
                 name="⏱️ Tempo Total em Call",
                 value=time_str,
                 inline=True
             )
         except Exception as exc:
             LOGGER.warning("Erro ao buscar tempo em call: %s", exc)
-            embed.add_field(
+            builder.add_field_safe(
                 name="⏱️ Tempo Total em Call",
                 value="0h 0min 0seg",
                 inline=True
@@ -1562,7 +1888,7 @@ class FichaCog(commands.Cog):
                 # Gerar barra de temperatura
                 thermometer = self._generate_activity_thermometer(msg_count, avg_messages)
                 
-                embed.add_field(
+                builder.add_field_safe(
                     name="📊 Estatísticas de Engajamento",
                     value=(
                         f"**Mensagens:** {msg_count:,}\n"
@@ -1575,224 +1901,62 @@ class FichaCog(commands.Cog):
                     inline=False
                 )
             else:
-                embed.add_field(
+                builder.add_field_safe(
                     name="📊 Estatísticas de Engajamento",
                     value="Nenhum dado disponível ainda.",
                     inline=False
                 )
         except Exception as exc:
             LOGGER.warning("Erro ao buscar analytics: %s", exc)
-            embed.add_field(
+            builder.add_field_safe(
                 name="📊 Estatísticas de Engajamento",
                 value="Erro ao carregar dados.",
                 inline=False
             )
         
-        # ===== ADVERTÊNCIAS =====
-        try:
-            adv_count = await self._get_member_adv_count(member, guild)
-            adv_text = "Nenhuma" if adv_count == 0 else f"{adv_count} ADV(s)"
-            embed.add_field(
-                name="⚠️ Advertências",
-                value=adv_text,
-                inline=True
-            )
-        except Exception as exc:
-            LOGGER.warning("Erro ao contar ADVs: %s", exc)
-            embed.add_field(
-                name="⚠️ Advertências",
-                value="Nenhuma",
-                inline=True
+        # ===== SEÇÃO 1: HIERARQUIA E PROGRESSÃO =====
+        hierarchy_text = await self._build_hierarchy_section(guild, member)
+        if hierarchy_text:
+            builder.add_field_safe(
+                name="🎖️ Hierarquia e Progressão",
+                value=hierarchy_text,
+                inline=False
             )
         
-        # ===== PROGRESSÃO DE CARREIRA (HIERARQUIA) =====
+        # ===== SEÇÃO 2: ADVERTÊNCIAS =====
+        adv_text = await self._build_adv_section(guild, member)
+        if adv_text:
+            builder.add_field_safe(
+                name="⚠️ Advertências",
+                value=adv_text,
+                inline=False
+            )
+        
+        # ===== SEÇÃO 3: OUTROS CARGOS =====
+        # Coleta IDs para excluir (hierarquia + advertências)
+        hierarchy_role_ids = []
         try:
-            from .hierarchy.repository import HierarchyRepository
-            from .hierarchy.cache import HierarchyCache
-            
-            cache = HierarchyCache()
-            repository = HierarchyRepository(self.db, cache)
-            
-            # ===== SINCRONIZAÇÃO SILENCIOSA: Verifica se cargo no Discord corresponde ao banco =====
-            # Regra Crítica: Só sincroniza se o cargo estiver na configuração de hierarquia
-            all_configs = await repository.get_all_configs(guild.id)
-            member_hierarchy_roles = [
-                role for role in member.roles 
-                if any(config.role_id == role.id for config in all_configs)
-            ]
-            
-            user_status = await repository.get_user_status(guild.id, member.id)
-            
-            if member_hierarchy_roles:
-                # Pega o cargo de maior level_order (mais alto na hierarquia)
-                highest_role = None
-                highest_level = 0
-                for role in member_hierarchy_roles:
-                    config = await repository.get_config(guild.id, role.id)
-                    if config and config.level_order > highest_level:
-                        highest_level = config.level_order
-                        highest_role = role
-                
-                # Se diferente do banco, sincroniza silenciosamente
-                if highest_role and (not user_status or user_status.current_role_id != highest_role.id):
-                    await repository.update_user_status(
-                        guild.id, member.id,
-                        current_role_id=highest_role.id,
-                        last_promotion_check=datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
-                    )
-                    # Atualiza user_status para usar na exibição
-                    user_status = await repository.get_user_status(guild.id, member.id)
-                    LOGGER.debug(
-                        "Sincronização silenciosa: usuário %s atualizado para cargo %s (nível %d)",
-                        member.id, highest_role.name, highest_level
-                    )
-            elif user_status and user_status.current_role_id:
-                # Membro não tem mais cargo de hierarquia no Discord, limpa banco
-                await repository.update_user_status(
-                    guild.id, member.id,
-                    current_role_id=None
-                )
-                user_status = None
-                LOGGER.debug(
-                    "Sincronização silenciosa: usuário %s não possui mais cargo de hierarquia, banco limpo",
-                    member.id
-                )
-            if user_status and user_status.current_role_id:
-                current_role = guild.get_role(user_status.current_role_id)
-                if current_role:
-                    # Busca configuração do cargo atual
-                    config = await repository.get_config(guild.id, user_status.current_role_id)
-                    if config:
-                        # Busca próximo cargo
-                        next_config = await repository.get_config_by_level(guild.id, config.level_order + 1)
-                        
-                        hierarchy_text = f"**Cargo Atual:** {current_role.mention} (Nível {config.level_order})"
-                        
-                        if next_config:
-                            next_role = guild.get_role(next_config.role_id)
-                            if next_role:
-                                hierarchy_text += f"\n**Próximo Cargo:** {next_role.mention} (Nível {next_config.level_order})"
-                                
-                                # Calcula progresso e cria barra visual
-                                try:
-                                    from .hierarchy.promotion_engine import HierarchyPromotionCog
-                                    temp_cog = HierarchyPromotionCog(self.bot, self.db)
-                                    meets_req, detailed_reason = await temp_cog._check_requirements(
-                                        guild, member.id, next_config
-                                    )
-                                    
-                                    # Extrai informações de progresso da detailed_reason
-                                    import re
-                                    progress_info = []
-                                    req_details = []
-                                    
-                                    # Mensagens
-                                    if "Mensagens:" in detailed_reason:
-                                        msg_match = re.search(r'Mensagens: (\d+)/(\d+)', detailed_reason)
-                                        if msg_match:
-                                            current, required = int(msg_match.group(1)), int(msg_match.group(2))
-                                            status = "✅" if current >= required else "❌"
-                                            progress_info.append((current, required))
-                                            req_details.append(f"💬 Mensagens: {current:,}/{required:,} {status}")
-                                    
-                                    # Call Time
-                                    if "Call Time:" in detailed_reason:
-                                        call_match = re.search(r'Call Time: (\d+)h/(\d+)h', detailed_reason)
-                                        if call_match:
-                                            current, required = int(call_match.group(1)), int(call_match.group(2))
-                                            status = "✅" if current >= required else "❌"
-                                            progress_info.append((current, required))
-                                            req_details.append(f"📞 Call: {current}h/{required}h {status}")
-                                    
-                                    # Reações
-                                    if "Reações:" in detailed_reason:
-                                        react_match = re.search(r'Reações: (\d+)/(\d+)', detailed_reason)
-                                        if react_match:
-                                            current, required = int(react_match.group(1)), int(react_match.group(2))
-                                            status = "✅" if current >= required else "❌"
-                                            progress_info.append((current, required))
-                                            req_details.append(f"⭐ Reações: {current:,}/{required:,} {status}")
-                                    
-                                    # Dias no Servidor
-                                    if "Dias no Servidor:" in detailed_reason:
-                                        days_match = re.search(r'Dias no Servidor: (\d+)/(\d+)', detailed_reason)
-                                        if days_match:
-                                            current, required = int(days_match.group(1)), int(days_match.group(2))
-                                            status = "✅" if current >= required else "❌"
-                                            progress_info.append((current, required))
-                                            req_details.append(f"📅 Dias: {current}/{required} {status}")
-                                    
-                                    # Tempo no Cargo
-                                    if "Tempo no Cargo:" in detailed_reason:
-                                        time_match = re.search(r'Tempo no Cargo: (\d+)/(\d+) dias', detailed_reason)
-                                        if time_match:
-                                            current, required = int(time_match.group(1)), int(time_match.group(2))
-                                            status = "✅" if current >= required else "❌"
-                                            progress_info.append((current, required))
-                                            req_details.append(f"⏳ Tempo no Cargo: {current}/{required} dias {status}")
-                                    
-                                    # Exibe lista completa de requisitos
-                                    if req_details:
-                                        hierarchy_text += "\n\n**📋 Requisitos:**"
-                                        # Quebra em múltiplas linhas se houver muitos requisitos
-                                        if len(req_details) <= 2:
-                                            hierarchy_text += "\n" + " | ".join(req_details)
-                                        else:
-                                            # Formata em linhas separadas para melhor legibilidade
-                                            for detail in req_details:
-                                                hierarchy_text += f"\n• {detail}"
-                                    
-                                    # Calcula progresso médio geral
-                                    if progress_info:
-                                        percentages = []
-                                        for current, required in progress_info:
-                                            if required is not None and required > 0:
-                                                pct = min(100, int((current / required * 100)))
-                                                percentages.append(pct)
-                                        
-                                        if percentages:
-                                            avg_progress = int(sum(percentages) / len(percentages))
-                                            
-                                            # Barra visual com 10 blocos baseada na média
-                                            filled = min(10, int(avg_progress / 10))
-                                            bar = "▰" * filled + "▱" * (10 - filled)
-                                            
-                                            hierarchy_text += f"\n\n**📊 Progresso Médio:** {bar} {avg_progress}%"
-                                    
-                                    # Informação de vagas (se aplicável)
-                                    if next_config.max_vacancies > 0:
-                                        # Conta usuários com o cargo (excluindo bots)
-                                        role = guild.get_role(next_config.role_id)
-                                        if role:
-                                            occupied = sum(1 for m in role.members if not m.bot)
-                                            available = max(0, next_config.max_vacancies - occupied)
-                                            hierarchy_text += f"\n**👥 Vagas:** {occupied}/{next_config.max_vacancies} ocupadas"
-                                            if available > 0:
-                                                hierarchy_text += f" ({available} disponíveis)"
-                                            else:
-                                                hierarchy_text += " (sem vagas)"
-                                    
-                                    # Status de elegibilidade
-                                    if meets_req:
-                                        hierarchy_text += "\n\n✅ **Elegível para promoção**"
-                                    else:
-                                        hierarchy_text += "\n\n❌ **Não elegível ainda**"
-                                        
-                                except Exception as e:
-                                    LOGGER.warning("Erro ao calcular progresso: %s", e)
-                                    # Se viewer for staff, mostra status básico
-                                    if viewer and await self._check_staff_permissions(viewer, guild):
-                                        hierarchy_text += "\n⚠️ **Erro ao verificar requisitos**"
-                        else:
-                            hierarchy_text += "\n🏆 **Cargo máximo alcançado**"
-                        
-                        embed.add_field(
-                            name="🎖️ Progressão de Carreira",
-                            value=hierarchy_text,
-                            inline=False
-                        )
-        except Exception as exc:
-            LOGGER.warning("Erro ao buscar dados de hierarquia: %s", exc)
+            if self._repository:
+                all_configs = await self._repository.get_all_configs(guild.id)
+                hierarchy_role_ids = [cfg.role_id for cfg in all_configs]
+        except Exception:
+            pass
+        
+        settings = await self._get_cached_settings(guild.id)
+        adv_role_ids = []
+        if settings.get("role_adv1"):
+            adv_role_ids.append(int(settings["role_adv1"]))
+        if settings.get("role_adv2"):
+            adv_role_ids.append(int(settings["role_adv2"]))
+        
+        exclude_ids = hierarchy_role_ids + adv_role_ids
+        other_roles_text = await self._build_other_roles_section(guild, member, exclude_ids)
+        
+        builder.add_field_safe(
+            name="🏷️ Outros Cargos",
+            value=other_roles_text,
+            inline=False
+        )
         
         # ===== ÚLTIMOS LOGS =====
         try:
@@ -1841,7 +2005,7 @@ class FichaCog(commands.Cog):
                     logs_text.append(f"{emoji} {author_name}: {content}")
                 
                 if logs_text:
-                    embed.add_field(
+                    builder.add_field_safe(
                         name="📝 Últimos Registros",
                         value="\n".join(logs_text),
                         inline=False
@@ -1870,7 +2034,7 @@ class FichaCog(commands.Cog):
                         notes_text.append(f"🕵️ {author_name}: {content}")
                     
                     if notes_text:
-                        embed.add_field(
+                        builder.add_field_safe(
                             name="🕵️ Notas Internas",
                             value="\n".join(notes_text),
                             inline=False
@@ -1878,27 +2042,7 @@ class FichaCog(commands.Cog):
             except Exception as exc:
                 LOGGER.warning("Erro ao buscar staff notes: %s", exc)
         
-        # ===== CURSOS (FUTURO) =====
-        # Estrutura preparada para quando implementarmos sistema de cursos
-        # course_roles = [r for r in roles if r.name.startswith("Curso:")]
-        # if course_roles:
-        #     embed.add_field(
-        #         name="📚 Cursos Concluídos",
-        #         value="\n".join([r.name.replace("Curso:", "") for r in course_roles]),
-        #         inline=False
-        #     )
-        
-        # ===== HIERARQUIA (FUTURO) =====
-        # Estrutura preparada para quando implementarmos sistema de hierarquia
-        # hierarchy_role = next((r for r in roles if r.name in HIERARCHY_LEVELS), None)
-        # if hierarchy_role:
-        #     embed.add_field(
-        #         name="🏆 Hierarquia",
-        #         value=hierarchy_role.name,
-        #         inline=True
-        #     )
-        
-        return embed
+        return builder.embed
 
     @commands.command(name="ficha")
     @command_guard("ficha")

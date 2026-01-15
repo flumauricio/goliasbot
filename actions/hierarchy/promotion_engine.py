@@ -2,6 +2,7 @@
 
 import asyncio
 import logging
+from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Optional, Dict, Any, List, Tuple
 
@@ -15,6 +16,49 @@ from .models import HierarchyConfig, HierarchyUserStatus
 from .utils import check_bot_hierarchy
 
 LOGGER = logging.getLogger(__name__)
+
+
+@dataclass
+class RequirementCheck:
+    """Resultado de verificação de um requisito."""
+    name: str
+    current: int
+    required: int
+    met: bool
+    emoji: str = ""
+    
+    @property
+    def progress_percentage(self) -> int:
+        """Calcula porcentagem de progresso."""
+        if self.required == 0:
+            return 100
+        return min(100, int((self.current / self.required) * 100))
+
+
+@dataclass
+class PromotionEligibility:
+    """Resultado completo de verificação de elegibilidade."""
+    is_eligible: bool
+    requirements: List[RequirementCheck]
+    min_required: int
+    total_defined: int
+    
+    @property
+    def overall_progress(self) -> int:
+        """Progresso médio de todos requisitos."""
+        if not self.requirements:
+            return 0
+        percentages = [req.progress_percentage for req in self.requirements]
+        return int(sum(percentages) / len(percentages))
+    
+    @property
+    def summary(self) -> str:
+        """Resumo textual da elegibilidade."""
+        met_count = len([r for r in self.requirements if r.met])
+        if self.min_required == self.total_defined:
+            return f"{'✅' if self.is_eligible else '❌'} Requisitos: {met_count}/{self.total_defined}"
+        else:
+            return f"{'✅' if self.is_eligible else '❌'} Requisitos: {met_count}/{self.total_defined} (mín: {self.min_required})"
 
 
 class HierarchyPromotionCog(commands.Cog):
@@ -828,6 +872,127 @@ class HierarchyPromotionCog(commands.Cog):
         )
         
         return True, detailed_reason
+    
+    async def check_requirements_structured(
+        self,
+        guild: discord.Guild,
+        user_id: int,
+        config: HierarchyConfig
+    ) -> PromotionEligibility:
+        """
+        Versão estruturada que retorna dados tipados, não string.
+        
+        Args:
+            guild: Servidor Discord
+            user_id: ID do usuário
+            config: Configuração do cargo a verificar
+            
+        Returns:
+            PromotionEligibility com requisitos estruturados
+        """
+        analytics = await self._get_user_analytics(guild.id, user_id)
+        voice_time = await self.db.get_total_voice_time(guild.id, user_id)
+        
+        member = guild.get_member(user_id)
+        if not member:
+            return PromotionEligibility(False, [], 0, 0)
+        
+        join_date = member.joined_at
+        now = datetime.now(join_date.tzinfo) if join_date and join_date.tzinfo else datetime.utcnow()
+        days_in_server = (now - join_date).days if join_date else 0
+        
+        requirements = []
+        
+        # Mensagens
+        if config.req_messages > 0:
+            current = analytics.get("msg_count", 0) if analytics else 0
+            requirements.append(RequirementCheck(
+                name="Mensagens",
+                current=current,
+                required=config.req_messages,
+                met=current >= config.req_messages,
+                emoji="💬"
+            ))
+        
+        # Call Time
+        if config.req_call_time > 0:
+            current_hours = voice_time // 3600
+            required_hours = config.req_call_time // 3600
+            requirements.append(RequirementCheck(
+                name="Call",
+                current=current_hours,
+                required=required_hours,
+                met=voice_time >= config.req_call_time,
+                emoji="📞"
+            ))
+        
+        # Reações
+        if config.req_reactions > 0:
+            current = analytics.get("reactions_given", 0) + analytics.get("reactions_received", 0) if analytics else 0
+            requirements.append(RequirementCheck(
+                name="Reações",
+                current=current,
+                required=config.req_reactions,
+                met=current >= config.req_reactions,
+                emoji="⭐"
+            ))
+        
+        # Dias no servidor
+        if config.req_min_days > 0:
+            requirements.append(RequirementCheck(
+                name="Dias no Servidor",
+                current=days_in_server,
+                required=config.req_min_days,
+                met=days_in_server >= config.req_min_days,
+                emoji="📅"
+            ))
+        
+        # Tempo no cargo
+        if config.min_days_in_role > 0:
+            user_status = await self.repository.get_user_status(guild.id, user_id)
+            days_in_role = 0
+            
+            if user_status and user_status.current_role_id:
+                history_entry = await self.db.get_latest_hierarchy_history(
+                    guild.id, user_id, action_type='promoted', to_role_id=user_status.current_role_id
+                )
+                
+                if history_entry and history_entry.get('created_at'):
+                    promotion_date = history_entry.get('created_at')
+                    if isinstance(promotion_date, str):
+                        try:
+                            promotion_date = datetime.strptime(promotion_date, "%Y-%m-%d %H:%M:%S")
+                        except ValueError:
+                            try:
+                                promotion_date = datetime.fromisoformat(promotion_date.replace('Z', '+00:00'))
+                            except (ValueError, AttributeError):
+                                promotion_date = None
+                    
+                    if promotion_date and isinstance(promotion_date, datetime):
+                        now_utc = datetime.utcnow()
+                        days_in_role = (now_utc - promotion_date.replace(tzinfo=None)).days
+                
+                if days_in_role == 0 and user_status.promoted_at:
+                    now_utc = datetime.utcnow()
+                    days_in_role = (now_utc - user_status.promoted_at.replace(tzinfo=None) if user_status.promoted_at.tzinfo else now_utc - user_status.promoted_at).days
+            
+            requirements.append(RequirementCheck(
+                name="Tempo no Cargo",
+                current=days_in_role,
+                required=config.min_days_in_role,
+                met=days_in_role >= config.min_days_in_role,
+                emoji="⏳"
+            ))
+        
+        met_count = len([r for r in requirements if r.met])
+        is_eligible = met_count >= config.req_min_any
+        
+        return PromotionEligibility(
+            is_eligible=is_eligible,
+            requirements=requirements,
+            min_required=config.req_min_any,
+            total_defined=len(requirements)
+        )
     
     async def _get_user_analytics(
         self, guild_id: int, user_id: int
