@@ -1,9 +1,10 @@
 import asyncio
 import logging
 import math
+import time
 from dataclasses import dataclass
 from datetime import timedelta, datetime
-from typing import Optional, Dict, Any, Tuple, List
+from typing import Optional, Dict, Any, Tuple, List, TYPE_CHECKING
 
 import discord
 from discord.ext import commands
@@ -11,6 +12,25 @@ from discord.ext import commands
 from db import Database
 from permissions import command_guard, check_command_permission
 from .registration import _get_settings
+
+# Importações de hierarchy movidas para o topo (evita importações dentro de métodos)
+if TYPE_CHECKING:
+    from .hierarchy.repository import HierarchyRepository
+    from .hierarchy.cache import HierarchyCache
+    from .hierarchy.promotion_engine import HierarchyPromotionCog
+    from .hierarchy.utils import check_bot_hierarchy
+else:
+    try:
+        from .hierarchy.repository import HierarchyRepository
+        from .hierarchy.cache import HierarchyCache
+        from .hierarchy.promotion_engine import HierarchyPromotionCog
+        from .hierarchy.utils import check_bot_hierarchy
+    except ImportError:
+        # Módulo de hierarquia não disponível
+        HierarchyRepository = None
+        HierarchyCache = None
+        HierarchyPromotionCog = None
+        check_bot_hierarchy = None
 
 LOGGER = logging.getLogger(__name__)
 
@@ -634,9 +654,13 @@ class PromoteModal(discord.ui.Modal, title="Promover Membro"):
         await interaction.response.defer(ephemeral=True)
         
         try:
-            from .hierarchy.repository import HierarchyRepository
-            from .hierarchy.cache import HierarchyCache
-            from .hierarchy.promotion_engine import HierarchyPromotionCog
+            # Usa importações do topo do arquivo
+            if not HierarchyRepository or not HierarchyCache or not HierarchyPromotionCog:
+                await interaction.followup.send(
+                    "❌ Sistema de hierarquia não disponível.",
+                    ephemeral=True
+                )
+                return
             
             cache = HierarchyCache()
             repository = HierarchyRepository(self.ficha_cog.db, cache)
@@ -743,9 +767,13 @@ class DemoteModal(discord.ui.Modal, title="Rebaixar Membro"):
         await interaction.response.defer(ephemeral=True)
         
         try:
-            from .hierarchy.repository import HierarchyRepository
-            from .hierarchy.cache import HierarchyCache
-            from datetime import datetime, timedelta
+            # Usa importações do topo do arquivo
+            if not HierarchyRepository or not HierarchyCache:
+                await interaction.followup.send(
+                    "❌ Sistema de hierarquia não disponível.",
+                    ephemeral=True
+                )
+                return
             
             cache = HierarchyCache()
             repository = HierarchyRepository(self.ficha_cog.db, cache)
@@ -792,8 +820,14 @@ class DemoteModal(discord.ui.Modal, title="Rebaixar Membro"):
                 )
                 return
             
-            # Verifica hierarquia do bot
-            from .hierarchy.utils import check_bot_hierarchy
+            # Verifica hierarquia do bot (usa importação do topo)
+            if not check_bot_hierarchy:
+                await interaction.followup.send(
+                    "❌ Função de verificação de hierarquia não disponível.",
+                    ephemeral=True
+                )
+                return
+            
             can_manage, error_msg = check_bot_hierarchy(interaction.guild, prev_role)
             if not can_manage:
                 await interaction.followup.send(
@@ -910,10 +944,19 @@ class LogHistoryView(discord.ui.View):
         self.viewer = viewer
         self.page = page
         self.logs_per_page = 5
+        self._total_logs_cache: Optional[int] = None  # Cache para evitar recontagem
+    
+    async def get_total_logs(self) -> int:
+        """Busca total de logs com cache."""
+        if self._total_logs_cache is None:
+            self._total_logs_cache = await self.ficha_cog.db.count_member_logs(
+                self.guild.id, self.member.id
+            )
+        return self._total_logs_cache
     
     async def build_embed(self) -> discord.Embed:
         """Constrói embed com logs da página atual."""
-        total_logs = await self.ficha_cog.db.count_member_logs(self.guild.id, self.member.id)
+        total_logs = await self.get_total_logs()  # Usa cache
         total_pages = math.ceil(total_logs / self.logs_per_page) if total_logs > 0 else 1
         
         # Ajusta página se necessário
@@ -1003,7 +1046,7 @@ class LogHistoryView(discord.ui.View):
     
     async def update_view(self):
         """Atualiza botões de navegação."""
-        total_logs = await self.ficha_cog.db.count_member_logs(self.guild.id, self.member.id)
+        total_logs = await self.get_total_logs()  # Usa cache
         total_pages = math.ceil(total_logs / self.logs_per_page) if total_logs > 0 else 1
         
         # Remove botões antigos
@@ -1048,7 +1091,7 @@ class LogHistoryView(discord.ui.View):
     
     async def next_page(self, interaction: discord.Interaction):
         """Navega para próxima página."""
-        total_logs = await self.ficha_cog.db.count_member_logs(self.guild.id, self.member.id)
+        total_logs = await self.get_total_logs()  # Usa cache
         total_pages = math.ceil(total_logs / self.logs_per_page) if total_logs > 0 else 1
         if self.page < total_pages - 1:
             self.page += 1
@@ -1112,8 +1155,9 @@ class MemberFichaView(discord.ui.View):
             
             # Progressão de Carreira (se houver hierarquia configurada)
             try:
-                from .hierarchy.repository import HierarchyRepository
-                from .hierarchy.cache import HierarchyCache
+                # Usa importações do topo do arquivo
+                if not HierarchyRepository or not HierarchyCache:
+                    raise ImportError("Hierarquia não disponível")
                 
                 cache = HierarchyCache()
                 repository = HierarchyRepository(self.ficha_cog.db, cache)
@@ -1259,14 +1303,11 @@ class FichaCog(commands.Cog):
         self.bot = bot
         self.db = db
         
-        # Cache compartilhado de hierarquia
-        try:
-            from .hierarchy.cache import HierarchyCache
-            from .hierarchy.repository import HierarchyRepository
-            
+        # Cache compartilhado de hierarquia (usa importações do topo)
+        if HierarchyRepository and HierarchyCache:
             self._hierarchy_cache = HierarchyCache()
             self._repository = HierarchyRepository(self.db, self._hierarchy_cache)
-        except ImportError:
+        else:
             # Módulo de hierarquia não está disponível
             self._hierarchy_cache = None
             self._repository = None
@@ -1391,8 +1432,11 @@ class FichaCog(commands.Cog):
             
             text += f"**Próximo Cargo:** {next_role.mention} (Nível {next_config.level_order})\n\n"
             
-            # Usa método estruturado
-            from .hierarchy.promotion_engine import HierarchyPromotionCog
+            # Usa método estruturado (usa importação do topo)
+            if not HierarchyPromotionCog:
+                text += "⚠️ *Sistema de verificação de requisitos não disponível*"
+                return text
+            
             temp_cog = HierarchyPromotionCog(self.bot, self.db)
             eligibility = await temp_cog.check_requirements_structured(guild, member.id, next_config)
             
@@ -1693,7 +1737,61 @@ class FichaCog(commands.Cog):
         
         Esta função foi estruturada para ser facilmente extensível.
         """
+        # Inicia medição de performance
+        start_time = time.perf_counter()
+        
         guild = member.guild
+        
+        # Calcula permissões de staff uma única vez
+        is_staff = await self._check_staff_permissions(viewer, guild) if viewer else False
+        
+        # OTIMIZAÇÃO: Paraleliza todas as queries independentes
+        gather_results = await asyncio.gather(
+            self._get_cached_settings(guild.id),
+            self.db.get_user_stats(guild.id, member.id),
+            self.db.get_total_voice_time(guild.id, member.id),
+            self.db.get_user_analytics(guild.id, member.id),
+            self.db.get_member_logs(guild.id, member.id, limit=3),
+            self.db.get_member_logs(guild.id, member.id, limit=5, log_type="staff_note") if is_staff else asyncio.sleep(0, result=[]),
+            self._build_hierarchy_section(guild, member),
+            self._build_adv_section(guild, member),
+            return_exceptions=True
+        )
+        
+        # Valida cada resultado do gather
+        settings = gather_results[0] if not isinstance(gather_results[0], Exception) else {}
+        if isinstance(gather_results[0], Exception):
+            LOGGER.error("Erro ao buscar settings: %s", gather_results[0], exc_info=gather_results[0])
+        
+        user_stats = gather_results[1] if not isinstance(gather_results[1], Exception) else None
+        if isinstance(gather_results[1], Exception):
+            LOGGER.error("Erro ao buscar user_stats: %s", gather_results[1], exc_info=gather_results[1])
+        
+        total_voice_seconds = gather_results[2] if not isinstance(gather_results[2], Exception) else 0
+        if isinstance(gather_results[2], Exception):
+            LOGGER.error("Erro ao buscar voice_time: %s", gather_results[2], exc_info=gather_results[2])
+        
+        analytics = gather_results[3] if not isinstance(gather_results[3], Exception) else None
+        if isinstance(gather_results[3], Exception):
+            LOGGER.error("Erro ao buscar analytics: %s", gather_results[3], exc_info=gather_results[3])
+        
+        logs = gather_results[4] if not isinstance(gather_results[4], Exception) else []
+        if isinstance(gather_results[4], Exception):
+            LOGGER.error("Erro ao buscar logs: %s", gather_results[4], exc_info=gather_results[4])
+        
+        staff_notes = gather_results[5] if not isinstance(gather_results[5], Exception) else []
+        if isinstance(gather_results[5], Exception):
+            LOGGER.error("Erro ao buscar staff_notes: %s", gather_results[5], exc_info=gather_results[5])
+        
+        hierarchy_text = gather_results[6] if not isinstance(gather_results[6], Exception) else None
+        if isinstance(gather_results[6], Exception):
+            LOGGER.error("Erro ao buscar hierarchy: %s", gather_results[6], exc_info=gather_results[6])
+            hierarchy_text = "❌ *Erro ao carregar dados de hierarquia*"
+        
+        adv_text = gather_results[7] if not isinstance(gather_results[7], Exception) else None
+        if isinstance(gather_results[7], Exception):
+            LOGGER.error("Erro ao buscar adv_status: %s", gather_results[7], exc_info=gather_results[7])
+            adv_text = "❌ *Erro ao carregar advertências*"
         
         # Usa EmbedBuilder para validação automática de limites
         builder = EmbedBuilder(
@@ -1819,103 +1917,93 @@ class FichaCog(commands.Cog):
             inline=True
         )
         
-        # ===== HISTÓRICO DE AÇÕES =====
-        try:
-            stats = await self.db.get_user_stats(guild.id, member.id)
-            if stats:
-                participations = stats.get("participations", 0)
-                total_earned = stats.get("total_earned", 0.0)
-                builder.add_field_safe(
-                    name="📊 Histórico de Ações",
-                    value=(
-                        f"**Participações:** {participations}\n"
-                        f"**Total Ganho:** R$ {total_earned:,.2f}"
-                    ),
-                    inline=True
-                )
-            else:
-                builder.add_field_safe(
-                    name="📊 Histórico de Ações",
-                    value="Nenhuma participação registrada",
-                    inline=True
-                )
-        except Exception as exc:
-            LOGGER.warning("Erro ao buscar estatísticas de ações: %s", exc)
+        # ===== HISTÓRICO DE AÇÕES ===== (já carregado no gather)
+        if user_stats:
+            participations = user_stats.get("participations", 0)
+            total_earned = user_stats.get("total_earned", 0.0)
             builder.add_field_safe(
                 name="📊 Histórico de Ações",
-                value="Erro ao carregar dados",
+                value=(
+                    f"**Participações:** {participations}\n"
+                    f"**Total Ganho:** R$ {total_earned:,.2f}"
+                ),
+                inline=True
+            )
+        else:
+            builder.add_field_safe(
+                name="📊 Histórico de Ações",
+                value="Nenhuma participação registrada",
                 inline=True
             )
         
-        # ===== TEMPO TOTAL EM CALL =====
+        # ===== TEMPO TOTAL EM CALL ===== (já carregado no gather)
         try:
             from .voice_utils import format_time
-            total_seconds = await self.db.get_total_voice_time(guild.id, member.id)
-            time_str = format_time(total_seconds)
+            time_str = format_time(total_voice_seconds)
             builder.add_field_safe(
                 name="⏱️ Tempo Total em Call",
                 value=time_str,
                 inline=True
             )
         except Exception as exc:
-            LOGGER.warning("Erro ao buscar tempo em call: %s", exc)
+            LOGGER.warning("Erro ao formatar tempo em call: %s", exc)
             builder.add_field_safe(
                 name="⏱️ Tempo Total em Call",
                 value="0h 0min 0seg",
                 inline=True
             )
         
-        # ===== ESTATÍSTICAS DE ENGAJAMENTO =====
-        try:
-            analytics = await self.db.get_user_analytics(guild.id, member.id)
-            if analytics:
-                msg_count = analytics.get("msg_count", 0)
-                img_count = analytics.get("img_count", 0)
-                reactions_given = analytics.get("reactions_given", 0)
-                reactions_received = analytics.get("reactions_received", 0)
-                mentions_sent = analytics.get("mentions_sent", 0)
-                mentions_received = analytics.get("mentions_received", 0)
-                
-                # Buscar ranking
-                rank = await self.db.get_user_rank(guild.id, member.id)
-                rank_text = f"#{rank}" if rank else "N/A"
-                
-                # Buscar média do servidor para calcular temperatura
-                avg_messages = await self.db.get_server_avg_messages(guild.id)
-                if avg_messages is None or avg_messages == 0:
-                    avg_messages = 1  # Evita divisão por zero
-                
-                # Gerar barra de temperatura
-                thermometer = self._generate_activity_thermometer(msg_count, avg_messages)
-                
-                builder.add_field_safe(
-                    name="📊 Estatísticas de Engajamento",
-                    value=(
-                        f"**Mensagens:** {msg_count:,}\n"
-                        f"**Imagens:** {img_count:,}\n"
-                        f"**Reações:** {reactions_given:,} dadas | {reactions_received:,} recebidas\n"
-                        f"**Menções:** {mentions_sent:,} enviadas | {mentions_received:,} recebidas\n"
-                        f"**Ranking:** {rank_text}º membro mais ativo\n"
-                        f"**Atividade:** {thermometer}"
-                    ),
-                    inline=False
-                )
-            else:
-                builder.add_field_safe(
-                    name="📊 Estatísticas de Engajamento",
-                    value="Nenhum dado disponível ainda.",
-                    inline=False
-                )
-        except Exception as exc:
-            LOGGER.warning("Erro ao buscar analytics: %s", exc)
+        # ===== ESTATÍSTICAS DE ENGAJAMENTO ===== (já carregado no gather)
+        if analytics:
+            msg_count = analytics.get("msg_count", 0)
+            img_count = analytics.get("img_count", 0)
+            reactions_given = analytics.get("reactions_given", 0)
+            reactions_received = analytics.get("reactions_received", 0)
+            mentions_sent = analytics.get("mentions_sent", 0)
+            mentions_received = analytics.get("mentions_received", 0)
+            
+            # Buscar ranking e média (paraleliza as 2 queries restantes)
+            rank, avg_messages = await asyncio.gather(
+                self.db.get_user_rank(guild.id, member.id),
+                self.db.get_server_avg_messages(guild.id),
+                return_exceptions=True
+            )
+            
+            # Valida resultados
+            if isinstance(rank, Exception):
+                LOGGER.warning("Erro ao buscar rank: %s", rank)
+                rank = None
+            if isinstance(avg_messages, Exception):
+                LOGGER.warning("Erro ao buscar avg_messages: %s", avg_messages)
+                avg_messages = 1
+            
+            rank_text = f"#{rank}" if rank else "N/A"
+            if avg_messages is None or avg_messages == 0:
+                avg_messages = 1  # Evita divisão por zero
+            
+            # Gerar barra de temperatura
+            thermometer = self._generate_activity_thermometer(msg_count, avg_messages)
+            
             builder.add_field_safe(
                 name="📊 Estatísticas de Engajamento",
-                value="Erro ao carregar dados.",
+                value=(
+                    f"**Mensagens:** {msg_count:,}\n"
+                    f"**Imagens:** {img_count:,}\n"
+                    f"**Reações:** {reactions_given:,} dadas | {reactions_received:,} recebidas\n"
+                    f"**Menções:** {mentions_sent:,} enviadas | {mentions_received:,} recebidas\n"
+                    f"**Ranking:** {rank_text}º membro mais ativo\n"
+                    f"**Atividade:** {thermometer}"
+                ),
+                inline=False
+            )
+        else:
+            builder.add_field_safe(
+                name="📊 Estatísticas de Engajamento",
+                value="Nenhum dado disponível ainda.",
                 inline=False
             )
         
-        # ===== SEÇÃO 1: HIERARQUIA E PROGRESSÃO =====
-        hierarchy_text = await self._build_hierarchy_section(guild, member)
+        # ===== SEÇÃO 1: HIERARQUIA E PROGRESSÃO ===== (já carregado no gather)
         if hierarchy_text:
             builder.add_field_safe(
                 name="🎖️ Hierarquia e Progressão",
@@ -1923,8 +2011,7 @@ class FichaCog(commands.Cog):
                 inline=False
             )
         
-        # ===== SEÇÃO 2: ADVERTÊNCIAS =====
-        adv_text = await self._build_adv_section(guild, member)
+        # ===== SEÇÃO 2: ADVERTÊNCIAS ===== (já carregado no gather)
         if adv_text:
             builder.add_field_safe(
                 name="⚠️ Advertências",
@@ -1932,7 +2019,7 @@ class FichaCog(commands.Cog):
                 inline=False
             )
         
-        # ===== SEÇÃO 3: OUTROS CARGOS =====
+        # ===== SEÇÃO 3: OUTROS CARGOS ===== (usa settings já carregado)
         # Coleta IDs para excluir (hierarquia + advertências)
         hierarchy_role_ids = []
         try:
@@ -1942,7 +2029,6 @@ class FichaCog(commands.Cog):
         except Exception:
             pass
         
-        settings = await self._get_cached_settings(guild.id)
         adv_role_ids = []
         if settings.get("role_adv1"):
             adv_role_ids.append(int(settings["role_adv1"]))
@@ -1958,89 +2044,110 @@ class FichaCog(commands.Cog):
             inline=False
         )
         
-        # ===== ÚLTIMOS LOGS =====
-        try:
-            logs = await self.db.get_member_logs(guild.id, member.id, limit=3)
-            is_staff = await self._check_staff_permissions(viewer, guild) if viewer else False
+        # ===== ÚLTIMOS LOGS ===== (já carregado no gather)
+        if logs:
+            logs_text = []
+            type_emojis = {
+                "comentario": "💬",
+                "adv": "⚠️",
+                "timeout": "🔇",
+                "kick": "🚫",
+                "nickname": "🏷️",
+                "voice_time": "⏱️",
+                "staff_note": "🕵️"
+            }
             
-            if logs:
-                logs_text = []
-                type_emojis = {
-                    "comentario": "💬",
-                    "adv": "⚠️",
-                    "timeout": "🔇",
-                    "kick": "🚫",
-                    "nickname": "🏷️",
-                    "voice_time": "⏱️",
-                    "staff_note": "🕵️"
-                }
+            for log in logs[:3]:
+                log_type = log.get("type", "unknown")
                 
-                for log in logs[:3]:
-                    log_type = log.get("type", "unknown")
-                    
-                    # Pula staff_note se viewer não for staff
-                    if log_type == "staff_note" and not is_staff:
-                        continue
-                    
-                    emoji = type_emojis.get(log_type, "📝")
-                    author_id = int(log.get("author_id", 0))
-                    author = guild.get_member(author_id)
-                    author_name = author.display_name if author else f"ID: {author_id}"
-                    
-                    content = log.get("content", "")
-                    if log_type == "voice_time":
-                        from .voice_utils import format_time
-                        delta = log.get("points_delta", 0)  # Reutiliza points_delta para segundos
-                        if delta != 0:
-                            time_str = format_time(abs(delta))
-                            sign = "+" if delta > 0 else "-"
-                            content = f"{sign}{time_str} - {content}"
-                        else:
-                            content = f"Zerado - {content}"
-                    
-                    # Trunca conteúdo muito longo
-                    if len(content) > 100:
-                        content = content[:97] + "..."
-                    
-                    logs_text.append(f"{emoji} {author_name}: {content}")
+                # Pula staff_note se viewer não for staff (usa is_staff já calculado)
+                if log_type == "staff_note" and not is_staff:
+                    continue
                 
-                if logs_text:
-                    builder.add_field_safe(
-                        name="📝 Últimos Registros",
-                        value="\n".join(logs_text),
-                        inline=False
-                    )
-        except Exception as exc:
-            LOGGER.warning("Erro ao buscar logs: %s", exc)
-        
-        # ===== STAFF NOTES (apenas para Staff) =====
-        if viewer and await self._check_staff_permissions(viewer, guild):
-            try:
-                staff_notes = await self.db.get_member_logs(
-                    guild.id,
-                    member.id,
-                    limit=5,
-                    log_type="staff_note"
+                emoji = type_emojis.get(log_type, "📝")
+                author_id = int(log.get("author_id", 0))
+                author = guild.get_member(author_id)
+                author_name = author.display_name if author else f"ID: {author_id}"
+                
+                content = log.get("content", "")
+                if log_type == "voice_time":
+                    from .voice_utils import format_time
+                    delta = log.get("points_delta", 0)  # Reutiliza points_delta para segundos
+                    if delta != 0:
+                        time_str = format_time(abs(delta))
+                        sign = "+" if delta > 0 else "-"
+                        content = f"{sign}{time_str} - {content}"
+                    else:
+                        content = f"Zerado - {content}"
+                
+                # Trunca conteúdo muito longo
+                if len(content) > 100:
+                    content = content[:97] + "..."
+                
+                logs_text.append(f"{emoji} {author_name}: {content}")
+            
+            if logs_text:
+                builder.add_field_safe(
+                    name="📝 Últimos Registros",
+                    value="\n".join(logs_text),
+                    inline=False
                 )
-                if staff_notes:
-                    notes_text = []
-                    for note in staff_notes[:3]:
-                        author_id = int(note.get("author_id", 0))
-                        author = guild.get_member(author_id)
-                        author_name = author.display_name if author else f"ID: {author_id}"
-                        content = note.get("content", "")
-                        if len(content) > 80:
-                            content = content[:77] + "..."
-                        notes_text.append(f"🕵️ {author_name}: {content}")
-                    
-                    if notes_text:
-                        builder.add_field_safe(
-                            name="🕵️ Notas Internas",
-                            value="\n".join(notes_text),
-                            inline=False
-                        )
-            except Exception as exc:
-                LOGGER.warning("Erro ao buscar staff notes: %s", exc)
+        
+        # ===== STAFF NOTES (apenas para Staff) ===== (já carregado no gather)
+        if is_staff and staff_notes:
+            notes_text = []
+            for note in staff_notes[:3]:
+                author_id = int(note.get("author_id", 0))
+                author = guild.get_member(author_id)
+                author_name = author.display_name if author else f"ID: {author_id}"
+                content = note.get("content", "")
+                if len(content) > 80:
+                    content = content[:77] + "..."
+                notes_text.append(f"🕵️ {author_name}: {content}")
+            
+            if notes_text:
+                builder.add_field_safe(
+                    name="🕵️ Notas Internas",
+                    value="\n".join(notes_text),
+                    inline=False
+                )
+        
+        # Log de performance com detalhamento
+        elapsed = time.perf_counter() - start_time
+        elapsed_ms = elapsed * 1000
+        
+        LOGGER.info(
+            "Ficha construída em %.2fms para usuário %s (guild: %s)",
+            elapsed_ms, member.id, guild.id
+        )
+        
+        if elapsed > 0.8:  # Aviso se demorar >800ms
+            # Detalhamento dos campos processados
+            fields_processed = []
+            if user_stats:
+                fields_processed.append("user_stats")
+            if total_voice_seconds > 0:
+                fields_processed.append("voice_time")
+            if analytics:
+                fields_processed.append("analytics")
+            if logs:
+                fields_processed.append(f"logs({len(logs)})")
+            if staff_notes:
+                fields_processed.append(f"staff_notes({len(staff_notes)})")
+            if hierarchy_text:
+                fields_processed.append("hierarchy")
+            if adv_text:
+                fields_processed.append("adv_status")
+            
+            LOGGER.warning(
+                "⚠️ PERFORMANCE: Ficha demorou %.2fms (acima de 800ms esperado)\n"
+                "   Usuário: %s | Guild: %s\n"
+                "   Campos processados: %s\n"
+                "   Total de fields no embed: %d",
+                elapsed_ms, member.id, guild.id,
+                ", ".join(fields_processed) if fields_processed else "nenhum",
+                len(builder.embed.fields)
+            )
         
         return builder.embed
 
@@ -2080,15 +2187,39 @@ class FichaCog(commands.Cog):
             # Busca dados de cadastro (se disponível)
             registration_data = await self._get_user_registration_data(guild.id, member.id)
             
-            # Constrói embed e view
-            embed = await self._build_user_ficha_embed(guild, member, registration_data, ctx.author)
-            view = await self._create_ficha_view(guild, member, ctx.author)
+            # Constrói embed com timeout de 10s
+            try:
+                embed = await asyncio.wait_for(
+                    self._build_user_ficha_embed(guild, member, registration_data, ctx.author),
+                    timeout=10.0
+                )
+            except asyncio.TimeoutError:
+                LOGGER.error(
+                    "Timeout ao construir ficha para usuário %s no servidor %s",
+                    member.id, guild.id
+                )
+                await ctx.send(
+                    "⏱️ Timeout ao carregar ficha (>10s). Por favor, tente novamente.\n"
+                    "Se o problema persistir, contate um administrador."
+                )
+                return
             
-            # Envia embed com view (sem delete_after para permitir interações)
+            # Cria view com tratamento de erro isolado
+            view = None
+            try:
+                view = await self._create_ficha_view(guild, member, ctx.author)
+            except Exception as e:
+                LOGGER.error(
+                    "Erro ao criar view da ficha para usuário %s: %s",
+                    member.id, e, exc_info=True
+                )
+                # Continua sem a view - pelo menos o embed será enviado
+            
+            # Envia embed (com ou sem view)
             await ctx.send(embed=embed, view=view)
+            
         finally:
-            # Remove do set de processamento após 2 segundos
-            await asyncio.sleep(2)
+            # Remove do set de processamento imediatamente após envio
             with self.bot._processing_lock:
                 self.bot._processing_messages.discard(msg_id)
 
