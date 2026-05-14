@@ -55,8 +55,8 @@ async def build_bot() -> commands.Bot:
                 'actions.analytics',
                 'actions.hierarchy.promotion_engine',
                 'actions.hierarchy.commands',
-                'actions.automod.cog',
-                'actions.streams.cog',
+                'actions.totp_command',
+                'actions.rockstar_command',
             ]
             
             for ext in extensions:
@@ -133,6 +133,7 @@ async def build_bot() -> commands.Bot:
             
             await restore_pending_views(self, db, config)
             await restore_ticket_views(self, db)
+            await restore_rockstar_panel(self, db)
 
     bot = RegistrationBot(command_prefix="!", intents=intents)
     
@@ -456,6 +457,36 @@ async def restore_ticket_views(bot: commands.Bot, db: Database):
         
     except Exception as exc:
         LOGGER.error("Erro ao restaurar views de tickets: %s", exc, exc_info=exc)
+
+async def restore_rockstar_panel(bot: commands.Bot, db: Database):
+    """Restaura o painel fixo de contas Rockstar após reinicialização."""
+    try:
+        from actions.rockstar_command import RockstarPanelView, build_panel_embed
+        for guild in bot.guilds:
+            try:
+                settings = await db.get_settings(guild.id)
+                channel_id = settings.get("channel_rockstar")
+                panel_msg_id = settings.get("rockstar_panel_message_id")
+                if not channel_id or not panel_msg_id:
+                    continue
+                channel = guild.get_channel(int(channel_id))
+                if not channel:
+                    continue
+                try:
+                    msg = await channel.fetch_message(int(panel_msg_id))
+                    view = RockstarPanelView(db)
+                    bot.add_view(view, message_id=msg.id)
+                    # Atualiza a embed com stats frescos
+                    embed = await build_panel_embed(db, guild)
+                    await msg.edit(embed=embed, view=view)
+                    LOGGER.info("Painel Rockstar restaurado em %s", guild.name)
+                except discord.NotFound:
+                    LOGGER.debug("Mensagem do painel Rockstar não encontrada em %s", guild.name)
+            except Exception as exc:
+                LOGGER.warning("Erro ao restaurar painel Rockstar em %s: %s", guild.id, exc)
+    except Exception as exc:
+        LOGGER.error("Erro ao restaurar painéis Rockstar: %s", exc, exc_info=True)
+
 
 async def main():
     bot = await build_bot()

@@ -1,3 +1,4 @@
+
 import asyncio
 import logging
 from pathlib import Path
@@ -91,6 +92,12 @@ class Database:
                 await cur.execute("ALTER TABLE settings ADD COLUMN hierarchy_check_interval_hours INTEGER DEFAULT 1")
             if "hierarchy_approval_channel" not in cols:
                 await cur.execute("ALTER TABLE settings ADD COLUMN hierarchy_approval_channel TEXT")
+            if "channel_totp" not in cols:
+                await cur.execute("ALTER TABLE settings ADD COLUMN channel_totp TEXT")
+            if "channel_rockstar" not in cols:
+                await cur.execute("ALTER TABLE settings ADD COLUMN channel_rockstar TEXT")
+            if "rockstar_panel_message_id" not in cols:
+                await cur.execute("ALTER TABLE settings ADD COLUMN rockstar_panel_message_id TEXT")
 
 
             # Permissões de comandos por guild
@@ -871,6 +878,68 @@ class Database:
                 """
             )
 
+            # ===== TABELAS DO SISTEMA DE CONTAS ROCKSTAR =====
+
+            await cur.execute(
+                """
+                CREATE TABLE IF NOT EXISTS rockstar_accounts (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    guild_id TEXT NOT NULL,
+                    user_id TEXT NOT NULL,
+                    email TEXT NOT NULL,
+                    password TEXT NOT NULL,
+                    totp_secret TEXT NOT NULL,
+                    is_active INTEGER NOT NULL DEFAULT 0,
+                    global_ban INTEGER NOT NULL DEFAULT 0,
+                    global_ban_date TIMESTAMP,
+                    note TEXT,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    UNIQUE(guild_id, user_id, email)
+                )
+                """
+            )
+            await cur.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_rockstar_accounts_user
+                ON rockstar_accounts(guild_id, user_id)
+                """
+            )
+
+            # Migração da coluna activated_at na tabela rockstar_accounts
+            await cur.execute("PRAGMA table_info(rockstar_accounts)")
+            rs_cols = [row[1] for row in await cur.fetchall()]
+            if "activated_at" not in rs_cols:
+                await cur.execute("ALTER TABLE rockstar_accounts ADD COLUMN activated_at TIMESTAMP")
+
+            await cur.execute(
+                """
+                CREATE TABLE IF NOT EXISTS rockstar_server_bans (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    account_id INTEGER NOT NULL,
+                    server_name TEXT NOT NULL,
+                    banned_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    FOREIGN KEY (account_id) REFERENCES rockstar_accounts(id) ON DELETE CASCADE
+                )
+                """
+            )
+            await cur.execute(
+                """
+                CREATE TABLE IF NOT EXISTS rockstar_filters (
+                    user_id TEXT NOT NULL,
+                    guild_id TEXT NOT NULL,
+                    filters TEXT,
+                    PRIMARY KEY (user_id, guild_id)
+                )
+                """
+            )
+            await cur.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_rockstar_bans_account
+                ON rockstar_server_bans(account_id)
+                """
+            )
+
+
         await self._conn.commit()
 
     async def upsert_settings(
@@ -894,6 +963,8 @@ class Database:
         hierarchy_approval_channel: Optional[int] = None,
         hierarchy_mod_role_id: Optional[int] = None,
         hierarchy_check_interval_hours: Optional[int] = None,
+        channel_totp: Optional[int] = None,
+        channel_rockstar: Optional[int] = None,
     ) -> None:
         if not self._conn:
             raise RuntimeError("Database não inicializado. Chame initialize() primeiro.")
@@ -916,6 +987,8 @@ class Database:
             "hierarchy_approval_channel": hierarchy_approval_channel,
             "hierarchy_mod_role_id": hierarchy_mod_role_id,
             "hierarchy_check_interval_hours": hierarchy_check_interval_hours,
+            "channel_totp": channel_totp,
+            "channel_rockstar": channel_rockstar,
         }
         existing = await self.get_settings(guild_id)
         merged = {**existing, **{k: v for k, v in data.items() if v is not None}}
@@ -941,8 +1014,10 @@ class Database:
                 rank_log_channel,
                 hierarchy_approval_channel,
                 hierarchy_mod_role_id,
-                hierarchy_check_interval_hours
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                hierarchy_check_interval_hours,
+                channel_totp,
+                channel_rockstar
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(guild_id) DO UPDATE SET
                 channel_registration_embed=excluded.channel_registration_embed,
                 channel_welcome=excluded.channel_welcome,
@@ -961,6 +1036,8 @@ class Database:
                 hierarchy_approval_channel=excluded.hierarchy_approval_channel,
                 hierarchy_mod_role_id=excluded.hierarchy_mod_role_id,
                 hierarchy_check_interval_hours=excluded.hierarchy_check_interval_hours,
+                channel_totp=excluded.channel_totp,
+                channel_rockstar=excluded.channel_rockstar,
                 updated_at=CURRENT_TIMESTAMP
             """,
             (
@@ -982,6 +1059,8 @@ class Database:
                 str(merged.get("hierarchy_approval_channel")) if merged.get("hierarchy_approval_channel") else None,
                 str(merged.get("hierarchy_mod_role_id")) if merged.get("hierarchy_mod_role_id") else None,
                 merged.get("hierarchy_check_interval_hours"),  # Integer
+                str(merged.get("channel_totp")) if merged.get("channel_totp") else None,
+                str(merged.get("channel_rockstar")) if merged.get("channel_rockstar") else None,
             ),
         )
         await self._conn.commit()
@@ -4577,8 +4656,200 @@ class Database:
             )
         await self._conn.commit()
 
+    # ===== MÉTODOS DO SISTEMA DE CONTAS ROCKSTAR =====
+
+    async def rockstar_add_account(
+        self, *, user_id: int, guild_id: int, email: str, password: str, totp_secret: str
+    ):
+        """Cadastra uma conta. Retorna 'duplicate' se já existir."""
+        if not self._conn:
+            raise RuntimeError("Database não inicializado.")
+        try:
+            async with self._conn.cursor() as cur:
+                await cur.execute(
+                    "INSERT INTO rockstar_accounts (guild_id, user_id, email, password, totp_secret) VALUES (?, ?, ?, ?, ?)",
+                    (str(guild_id), str(user_id), email, password, totp_secret),
+                )
+            await self._conn.commit()
+            return "ok"
+        except Exception as e:
+            if "UNIQUE" in str(e):
+                return "duplicate"
+            raise
+
+    async def rockstar_list_accounts(self, user_id: int, guild_id: int) -> list:
+        """Lista todas as contas de um usuário no servidor."""
+        if not self._conn:
+            raise RuntimeError("Database não inicializado.")
+        async with self._conn.cursor() as cur:
+            await cur.execute(
+                "SELECT * FROM rockstar_accounts WHERE guild_id = ? AND user_id = ? ORDER BY is_active DESC, created_at ASC",
+                (str(guild_id), str(user_id)),
+            )
+            rows = await cur.fetchall()
+        return [dict(r) for r in rows]
+
+    async def rockstar_get_account(self, account_id: int) -> dict:
+        """Busca uma conta pelo ID."""
+        if not self._conn:
+            raise RuntimeError("Database não inicializado.")
+        async with self._conn.cursor() as cur:
+            await cur.execute("SELECT * FROM rockstar_accounts WHERE id = ?", (account_id,))
+            row = await cur.fetchone()
+        return dict(row) if row else {}
+
+    async def rockstar_delete_account(self, account_id: int) -> None:
+        """Deleta uma conta e seus bans em cascata."""
+        if not self._conn:
+            raise RuntimeError("Database não inicializado.")
+        async with self._conn.cursor() as cur:
+            await cur.execute("DELETE FROM rockstar_accounts WHERE id = ?", (account_id,))
+        await self._conn.commit()
+
+    async def rockstar_set_active(self, account_id: int, user_id: int, guild_id: int) -> None:
+        """Define conta como ativa, desativando todas as demais do mesmo usuário."""
+        if not self._conn:
+            raise RuntimeError("Database não inicializado.")
+        from datetime import datetime
+        now = datetime.utcnow().isoformat()
+        async with self._conn.cursor() as cur:
+            await cur.execute(
+                "UPDATE rockstar_accounts SET is_active = 0 WHERE user_id = ? AND guild_id = ?",
+                (str(user_id), str(guild_id)),
+            )
+            await cur.execute(
+                "UPDATE rockstar_accounts SET is_active = 1, activated_at = ? WHERE id = ?",
+                (now, account_id),
+            )
+        await self._conn.commit()
+
+    async def rockstar_set_global_ban(self, account_id: int, state: bool) -> None:
+        """Ativa ou desativa o ban global de uma conta."""
+        if not self._conn:
+            raise RuntimeError("Database não inicializado.")
+        from datetime import datetime
+        ban_date = datetime.utcnow().isoformat() if state else None
+        async with self._conn.cursor() as cur:
+            await cur.execute(
+                "UPDATE rockstar_accounts SET global_ban = ?, global_ban_date = ? WHERE id = ?",
+                (1 if state else 0, ban_date, account_id),
+            )
+        await self._conn.commit()
+
+    async def rockstar_update_note(self, account_id: int, note: str) -> None:
+        """Atualiza a observação de uma conta."""
+        if not self._conn:
+            raise RuntimeError("Database não inicializado.")
+        async with self._conn.cursor() as cur:
+            await cur.execute(
+                "UPDATE rockstar_accounts SET note = ? WHERE id = ?",
+                (note, account_id),
+            )
+        await self._conn.commit()
+
+    async def rockstar_add_server_ban(self, account_id: int, server_name: str) -> None:
+        """Registra ban em um servidor/cidade."""
+        if not self._conn:
+            raise RuntimeError("Database não inicializado.")
+        async with self._conn.cursor() as cur:
+            await cur.execute(
+                "INSERT INTO rockstar_server_bans (account_id, server_name) VALUES (?, ?)",
+                (account_id, server_name),
+            )
+        await self._conn.commit()
+
+    async def rockstar_remove_server_ban(self, ban_id: int) -> None:
+        """Remove um ban de servidor pelo ID."""
+        if not self._conn:
+            raise RuntimeError("Database não inicializado.")
+        async with self._conn.cursor() as cur:
+            await cur.execute("DELETE FROM rockstar_server_bans WHERE id = ?", (ban_id,))
+        await self._conn.commit()
+
+    async def rockstar_get_server_bans(self, account_id: int) -> list:
+        """Retorna todos os bans de servidor de uma conta."""
+        if not self._conn:
+            raise RuntimeError("Database não inicializado.")
+        async with self._conn.cursor() as cur:
+            await cur.execute(
+                "SELECT * FROM rockstar_server_bans WHERE account_id = ? ORDER BY banned_at DESC",
+                (account_id,),
+            )
+            rows = await cur.fetchall()
+        return [dict(r) for r in rows]
+
+    async def rockstar_save_panel_message(self, guild_id: int, message_id: int) -> None:
+        """Salva o ID da mensagem do painel fixo nas settings."""
+        if not self._conn:
+            raise RuntimeError("Database não inicializado.")
+        async with self._conn.cursor() as cur:
+            await cur.execute(
+                """
+                INSERT INTO settings (guild_id, rockstar_panel_message_id)
+                VALUES (?, ?)
+                ON CONFLICT(guild_id) DO UPDATE SET
+                    rockstar_panel_message_id = excluded.rockstar_panel_message_id,
+                    updated_at = CURRENT_TIMESTAMP
+                """,
+                (str(guild_id), str(message_id)),
+            )
+        await self._conn.commit()
+
+    # ── Rockstar filtros ─────────────────────────────────────────────
+
+    async def rockstar_save_filters(self, user_id: int, guild_id: int, filters: str):
+        if not self._conn:
+            raise RuntimeError("Database não inicializado.")
+
+        async with self._conn.cursor() as cur:
+            await cur.execute(
+                """
+                INSERT INTO rockstar_filters (user_id, guild_id, filters)
+                VALUES (?, ?, ?)
+                ON CONFLICT(user_id, guild_id)
+                DO UPDATE SET filters = excluded.filters
+                """,
+                (
+                    str(user_id),
+                    str(guild_id),
+                    filters.strip(),
+                ),
+            )
+
+        await self._conn.commit()
+
+
+    async def rockstar_get_filters(self, user_id: int, guild_id: int) -> list[str]:
+        if not self._conn:
+            raise RuntimeError("Database não inicializado.")
+
+        async with self._conn.cursor() as cur:
+            await cur.execute(
+                """
+                SELECT filters
+                FROM rockstar_filters
+                WHERE user_id = ? AND guild_id = ?
+                """,
+                (
+                    str(user_id),
+                    str(guild_id),
+                ),
+            )
+
+            row = await cur.fetchone()
+
+        if not row or not row["filters"]:
+            return []
+
+        return [
+            x.strip().lower()
+            for x in row["filters"].split(",")
+            if x.strip()
+        ]
+
     async def close(self) -> None:
         """Fecha a conexão com o banco de dados."""
         if self._conn:
             await self._conn.close()
             self._conn = None
+

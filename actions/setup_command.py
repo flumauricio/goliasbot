@@ -815,6 +815,30 @@ class MainDashboardView(discord.ui.View):
         embed = await view.build_embed()
         await interaction.response.edit_message(embed=embed, view=view)
 
+    @discord.ui.button(label="🔐 Configurar 2FA", style=discord.ButtonStyle.primary, row=3)
+    async def open_totp(self, interaction: discord.Interaction, button: discord.ui.Button):
+        """Abre configuração do sistema 2FA."""
+        if not interaction.guild:
+            await interaction.response.send_message("❌ Use este comando em um servidor.", ephemeral=True)
+            return
+
+        from .totp_config import TotpSetupView
+        view = TotpSetupView(self.bot, self.db, interaction.guild, parent_view=self)
+        embed = await view.build_embed()
+        await interaction.response.edit_message(embed=embed, view=view)
+
+    @discord.ui.button(label="🎮 Configurar Rockstar", style=discord.ButtonStyle.primary, row=4)
+    async def open_rockstar(self, interaction: discord.Interaction, button: discord.ui.Button):
+        """Abre configuração do sistema de contas Rockstar."""
+        if not interaction.guild:
+            await interaction.response.send_message("❌ Use este comando em um servidor.", ephemeral=True)
+            return
+
+        from .rockstar_config import RockstarSetupView
+        view = RockstarSetupView(self.bot, self.db, interaction.guild, parent_view=self)
+        embed = await view.build_embed()
+        await interaction.response.edit_message(embed=embed, view=view)
+
 
 # ===== Wizard Views =====
 
@@ -2189,3 +2213,4 @@ async def setup(bot):
     from db import Database
     
     await bot.add_cog(SetupCog(bot, bot.db, bot.config_manager))
+

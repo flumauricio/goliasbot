@@ -1,15 +1,28 @@
-# Configurações com Tokens e Senhas (SEGURANÇA!)
+# ─────────────────────────────────────────────
+# Configurações sensíveis / credenciais
+# ─────────────────────────────────────────────
+
 config.json
 .env
 *.env
+.env.*
+secrets.json
 
-# Banco de dados (Arquivos que mudam toda hora)
+# ─────────────────────────────────────────────
+# Banco de dados
+# ─────────────────────────────────────────────
+
 *.sqlite
 *.sqlite3
 *.db
 *.db-journal
+*.db-shm
+*.db-wal
 
-# Pastas temporárias do Python (Lixo de código)
+# ─────────────────────────────────────────────
+# Cache Python
+# ─────────────────────────────────────────────
+
 __pycache__/
 *.py[cod]
 *$py.class
@@ -17,30 +30,58 @@ __pycache__/
 *.pyo
 *.pyd
 
-# Ambiente Virtual
+# pytest / mypy / coverage
+.pytest_cache/
+.mypy_cache/
+.coverage
+htmlcov/
+
+# ─────────────────────────────────────────────
+# Ambiente virtual
+# ─────────────────────────────────────────────
+
 venv/
 .venv/
 env/
 ENV/
 
-# Arquivos temporários e de sistema
+# ─────────────────────────────────────────────
+# Logs e temporários
+# ─────────────────────────────────────────────
+
 *.tmp
 *.temp
 *.log
+logs/
 *.bak
 *.swp
 *.swo
 *~
+
+# ─────────────────────────────────────────────
+# Sistema operacional
+# ─────────────────────────────────────────────
+
 .DS_Store
 Thumbs.db
 
-# Arquivos de IDE
+# ─────────────────────────────────────────────
+# IDEs / editores
+# ─────────────────────────────────────────────
+
 .vscode/
 .idea/
 *.sublime-project
 *.sublime-workspace
 
-# Arquivos de backup e zip
+# Cursor
+.cursorrules
+.cursor/
+
+# ─────────────────────────────────────────────
+# Compactados / backups
+# ─────────────────────────────────────────────
+
 *.zip
 *.tar
 *.tar.gz
@@ -48,6 +89,11 @@ Thumbs.db
 Bot.zip
 Untitled*
 
-# Cursor rules and settings
-.cursorrules
-.cursor/
+# ─────────────────────────────────────────────
+# Arquivos opcionais do Discord bot
+# ─────────────────────────────────────────────
+
+session/
+cache/
+downloads/
+temp/
