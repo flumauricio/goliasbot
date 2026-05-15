@@ -93,8 +93,7 @@ class HierarchyPromotionCog(commands.Cog):
         """Inicializa task loop ao carregar o cog."""
         self._running = True
         # Cria task sem aguardar bot estar pronto (será aguardado no loop)
-        self._check_task = asyncio.create_task(self._check_loop())
-        LOGGER.info("HierarchyPromotionCog carregado - task loop iniciado")
+        self._check_task = asyncio.create_task(self._check_loop())        
     
     async def cog_unload(self):
         """Cancela task loop ao descarregar o cog."""

@@ -57,6 +57,7 @@ async def build_bot() -> commands.Bot:
                 'actions.hierarchy.commands',
                 'actions.totp_command',
                 'actions.rockstar_command',
+                'actions.discord_accounts',
             ]
             
             for ext in extensions:
@@ -129,11 +130,10 @@ async def build_bot() -> commands.Bot:
                     LOGGER.warning("Erro ao restaurar views de aprovação em %s: %s", guild.id, exc)
             
             # Restaura views de aprovação de hierarquia pendentes (método antigo para compatibilidade)
-            await restore_hierarchy_approval_views(self, db)
-            
             await restore_pending_views(self, db, config)
             await restore_ticket_views(self, db)
             await restore_rockstar_panel(self, db)
+            await restore_discord_accounts_panel(self, db)
 
     bot = RegistrationBot(command_prefix="!", intents=intents)
     
@@ -487,6 +487,34 @@ async def restore_rockstar_panel(bot: commands.Bot, db: Database):
     except Exception as exc:
         LOGGER.error("Erro ao restaurar painéis Rockstar: %s", exc, exc_info=True)
 
+async def restore_discord_accounts_panel(bot: commands.Bot, db: Database):
+    """Restaura o painel fixo de contas Discord Accounts após reinicialização."""
+    try:
+        from actions.discord_accounts import DiscordPanelView, build_panel_embed
+        for guild in bot.guilds:
+            try:
+                settings = await db.get_settings(guild.id)
+                channel_id = settings.get("channel_discord_accounts")
+                panel_msg_id = settings.get("discord_accounts_panel_message_id")
+                if not channel_id or not panel_msg_id:
+                    continue
+                channel = guild.get_channel(int(channel_id))
+                if not channel:
+                    continue
+                try:
+                    msg = await channel.fetch_message(int(panel_msg_id))
+                    view = DiscordPanelView(db)
+                    bot.add_view(view, message_id=msg.id)
+                    # Restaura a view no painel
+                    embed = await build_panel_embed(db, guild)
+                    await msg.edit(embed=embed, view=view)
+                    LOGGER.info("Painel Discord Accounts restaurado em %s", guild.name)
+                except discord.NotFound:
+                    LOGGER.debug("Mensagem do painel Discord Accounts não encontrada em %s", guild.name)
+            except Exception as exc:
+                LOGGER.warning("Erro ao restaurar painel Discord Accounts em %s: %s", guild.id, exc)
+    except Exception as exc:
+        LOGGER.error("Erro ao restaurar painéis Discord Accounts: %s", exc, exc_info=True)
 
 async def main():
     bot = await build_bot()

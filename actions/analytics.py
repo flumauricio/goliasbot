@@ -41,7 +41,7 @@ class AnalyticsCog(commands.Cog):
     async def cog_load(self):
         """Inicializa tarefa periódica ao carregar o cog."""
         self.save_buffer_task.start()
-        LOGGER.info("AnalyticsCog carregado - tarefa de salvamento iniciada")
+        
     
     async def cog_unload(self):
         """Salva buffer pendente antes de desligar."""

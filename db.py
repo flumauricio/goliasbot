@@ -98,7 +98,10 @@ class Database:
                 await cur.execute("ALTER TABLE settings ADD COLUMN channel_rockstar TEXT")
             if "rockstar_panel_message_id" not in cols:
                 await cur.execute("ALTER TABLE settings ADD COLUMN rockstar_panel_message_id TEXT")
-
+            if "channel_discord_accounts" not in cols:
+                await cur.execute("ALTER TABLE settings ADD COLUMN channel_discord_accounts TEXT")
+            if "discord_accounts_panel_message_id" not in cols:
+                await cur.execute("ALTER TABLE settings ADD COLUMN discord_accounts_panel_message_id TEXT")
 
             # Permissões de comandos por guild
             await cur.execute(
@@ -934,6 +937,35 @@ class Database:
             )
             await cur.execute(
                 """
+                CREATE TABLE IF NOT EXISTS discord_accounts (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+
+                    user_id TEXT NOT NULL,
+                    guild_id TEXT NOT NULL,
+
+                    discord_user TEXT NOT NULL,
+                    discord_password TEXT NOT NULL,
+
+                    email TEXT NOT NULL,
+                    email_password TEXT NOT NULL,
+
+                    steam_user TEXT,
+                    steam_password TEXT,
+
+                    rockstar_account_id INTEGER,
+
+                    note TEXT,
+
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+
+                    FOREIGN KEY (rockstar_account_id)
+                        REFERENCES rockstar_accounts(id)
+                        ON DELETE SET NULL
+                )
+                """
+            )
+            await cur.execute(
+                """
                 CREATE INDEX IF NOT EXISTS idx_rockstar_bans_account
                 ON rockstar_server_bans(account_id)
                 """
@@ -965,6 +997,9 @@ class Database:
         hierarchy_check_interval_hours: Optional[int] = None,
         channel_totp: Optional[int] = None,
         channel_rockstar: Optional[int] = None,
+        channel_discord_accounts: Optional[int] = None,
+        rockstar_panel_message_id: Optional[int] = None,
+        discord_accounts_panel_message_id: Optional[int] = None,
     ) -> None:
         if not self._conn:
             raise RuntimeError("Database não inicializado. Chame initialize() primeiro.")
@@ -989,6 +1024,9 @@ class Database:
             "hierarchy_check_interval_hours": hierarchy_check_interval_hours,
             "channel_totp": channel_totp,
             "channel_rockstar": channel_rockstar,
+            "channel_discord_accounts": channel_discord_accounts,
+            "rockstar_panel_message_id": rockstar_panel_message_id,
+            "discord_accounts_panel_message_id": discord_accounts_panel_message_id,
         }
         existing = await self.get_settings(guild_id)
         merged = {**existing, **{k: v for k, v in data.items() if v is not None}}
@@ -1016,8 +1054,11 @@ class Database:
                 hierarchy_mod_role_id,
                 hierarchy_check_interval_hours,
                 channel_totp,
-                channel_rockstar
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                channel_rockstar,
+                channel_discord_accounts,
+                rockstar_panel_message_id,
+                discord_accounts_panel_message_id
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(guild_id) DO UPDATE SET
                 channel_registration_embed=excluded.channel_registration_embed,
                 channel_welcome=excluded.channel_welcome,
@@ -1037,7 +1078,10 @@ class Database:
                 hierarchy_mod_role_id=excluded.hierarchy_mod_role_id,
                 hierarchy_check_interval_hours=excluded.hierarchy_check_interval_hours,
                 channel_totp=excluded.channel_totp,
+                channel_discord_accounts=excluded.channel_discord_accounts,
                 channel_rockstar=excluded.channel_rockstar,
+                rockstar_panel_message_id=excluded.rockstar_panel_message_id,
+                discord_accounts_panel_message_id=excluded.discord_accounts_panel_message_id,
                 updated_at=CURRENT_TIMESTAMP
             """,
             (
@@ -1061,6 +1105,9 @@ class Database:
                 merged.get("hierarchy_check_interval_hours"),  # Integer
                 str(merged.get("channel_totp")) if merged.get("channel_totp") else None,
                 str(merged.get("channel_rockstar")) if merged.get("channel_rockstar") else None,
+                str(merged.get("channel_discord_accounts")) if merged.get("channel_discord_accounts") else None,
+                str(merged.get("rockstar_panel_message_id")) if merged.get("rockstar_panel_message_id") else None,
+                str(merged.get("discord_accounts_panel_message_id")) if merged.get("discord_accounts_panel_message_id") else None,
             ),
         )
         await self._conn.commit()
@@ -4689,6 +4736,19 @@ class Database:
             rows = await cur.fetchall()
         return [dict(r) for r in rows]
 
+    async def rockstar_list_guild_accounts(self, guild_id: int) -> list:
+        if not self._conn:
+            raise RuntimeError("Database não inicializado.")
+
+        async with self._conn.cursor() as cur:
+            await cur.execute(
+                "SELECT * FROM rockstar_accounts WHERE guild_id = ? ORDER BY created_at DESC",
+                (str(guild_id),),
+            )
+            rows = await cur.fetchall()
+
+        return [dict(r) for r in rows]
+
     async def rockstar_get_account(self, account_id: int) -> dict:
         """Busca uma conta pelo ID."""
         if not self._conn:
@@ -4846,6 +4906,198 @@ class Database:
             for x in row["filters"].split(",")
             if x.strip()
         ]
+
+        # ── Discord Accounts ─────────────────────────────────────────────
+
+    async def discord_add_account(
+        self,
+        user_id: int,
+        guild_id: int,
+        discord_user: str,
+        discord_password: str,
+        email: str,
+        email_password: str,
+        steam_user: str = None,
+        steam_password: str = None,
+    ):
+        if not self._conn:
+            raise RuntimeError("Database não inicializado.")
+
+        async with self._conn.cursor() as cur:
+            await cur.execute(
+                """
+                INSERT INTO discord_accounts (
+                    user_id,
+                    guild_id,
+                    discord_user,
+                    discord_password,
+                    email,
+                    email_password,
+                    steam_user,
+                    steam_password
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    str(user_id),
+                    str(guild_id),
+                    discord_user.strip(),
+                    discord_password.strip(),
+                    email.strip(),
+                    email_password.strip(),
+                    steam_user.strip() if steam_user else None,
+                    steam_password.strip() if steam_password else None,
+                ),
+            )
+
+            account_id = cur.lastrowid
+
+        await self._conn.commit()
+
+        return account_id
+
+
+    async def discord_update_steam(
+        self,
+        account_id: int,
+        steam_user: str,
+        steam_password: str,
+    ):
+        if not self._conn:
+            raise RuntimeError("Database não inicializado.")
+
+        async with self._conn.cursor() as cur:
+            await cur.execute(
+                """
+                UPDATE discord_accounts
+                SET steam_user = ?, steam_password = ?
+                WHERE id = ?
+                """,
+                (
+                    steam_user.strip() if steam_user else None,
+                    steam_password.strip() if steam_password else None,
+                    account_id,
+                ),
+            )
+
+        await self._conn.commit()
+
+
+    async def discord_list_accounts(self, user_id: int, guild_id: int):
+        if not self._conn:
+            raise RuntimeError("Database não inicializado.")
+
+        async with self._conn.cursor() as cur:
+            await cur.execute(
+                """
+                SELECT *
+                FROM discord_accounts
+                WHERE user_id = ?
+                AND guild_id = ?
+                ORDER BY created_at DESC
+                """,
+                (
+                    str(user_id),
+                    str(guild_id),
+                ),
+            )
+
+            rows = await cur.fetchall()
+
+        return [dict(r) for r in rows]
+
+
+    async def discord_list_guild_accounts(self, guild_id: int):
+        if not self._conn:
+            raise RuntimeError("Database não inicializado.")
+
+        async with self._conn.cursor() as cur:
+            await cur.execute(
+                "SELECT * FROM discord_accounts WHERE guild_id = ? ORDER BY created_at DESC",
+                (str(guild_id),),
+            )
+            rows = await cur.fetchall()
+
+        return [dict(r) for r in rows]
+
+
+    async def discord_get_account(self, account_id: int):
+        if not self._conn:
+            raise RuntimeError("Database não inicializado.")
+
+        async with self._conn.cursor() as cur:
+            await cur.execute(
+                """
+                SELECT *
+                FROM discord_accounts
+                WHERE id = ?
+                """,
+                (account_id,),
+            )
+
+            row = await cur.fetchone()
+
+        return dict(row) if row else None
+
+
+    async def discord_delete_account(self, account_id: int):
+        if not self._conn:
+            raise RuntimeError("Database não inicializado.")
+
+        async with self._conn.cursor() as cur:
+            await cur.execute(
+                """
+                DELETE FROM discord_accounts
+                WHERE id = ?
+                """,
+                (account_id,),
+            )
+
+        await self._conn.commit()
+
+
+    async def discord_update_note(self, account_id: int, note: str):
+        if not self._conn:
+            raise RuntimeError("Database não inicializado.")
+
+        async with self._conn.cursor() as cur:
+            await cur.execute(
+                """
+                UPDATE discord_accounts
+                SET note = ?
+                WHERE id = ?
+                """,
+                (
+                    note,
+                    account_id,
+                ),
+            )
+
+        await self._conn.commit()
+
+
+    async def discord_link_rockstar(
+        self,
+        discord_account_id: int,
+        rockstar_account_id: int | None,
+    ):
+        if not self._conn:
+            raise RuntimeError("Database não inicializado.")
+
+        async with self._conn.cursor() as cur:
+            await cur.execute(
+                """
+                UPDATE discord_accounts
+                SET rockstar_account_id = ?
+                WHERE id = ?
+                """,
+                (
+                    rockstar_account_id,
+                    discord_account_id,
+                ),
+            )
+
+        await self._conn.commit()
 
     async def close(self) -> None:
         """Fecha a conexão com o banco de dados."""

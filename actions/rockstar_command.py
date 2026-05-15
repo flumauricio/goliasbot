@@ -9,6 +9,7 @@ import hmac
 import logging
 import struct
 import time
+import io
 
 import discord
 from discord.ext import commands
@@ -469,11 +470,6 @@ class AccountListView(discord.ui.View):
         embeds = [header]
 
         # ── Um embed por conta (barra lateral colorida) ───────────────────────
-        #
-        # Cores:  🟢 ativa  →  verde    0x57F287
-        #         🔴 ban global → vermelho  0xED4245
-        #         ⚪ normal     → cinza     0x4E5058  (cinza escuro Discord)
-        #
         for a in page_accounts:
             is_active = bool(a.get("is_active"))
             global_ban = bool(a.get("global_ban"))
@@ -489,9 +485,6 @@ class AccountListView(discord.ui.View):
                 side_color = 0x4E5058   # cinza
                 status_line = "⚪  Normal"
 
-            # Título do card = e-mail em destaque (aparece em azul claro no Discord
-            # pois é o título do embed — não podemos forçar cor de texto, mas o
-            # título nativo já tem aparência diferenciada)
             card = discord.Embed(
                 title=a["email"],
                 color=side_color,
@@ -643,6 +636,32 @@ class RockstarPanelView(discord.ui.View):
         view._message = msg
 
     @discord.ui.button(
+        label="💾 Backup",
+        style=discord.ButtonStyle.secondary,
+        custom_id="rockstar_panel:backup",
+        row=1,
+    )
+    async def backup_accounts(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.defer(ephemeral=True)
+        # Backup somente das contas do próprio usuário
+        backup_file = await create_rockstar_user_backup(
+            self.db,
+            interaction.user.id,
+            interaction.guild.id,
+        )
+        if not backup_file:
+            await interaction.followup.send(
+                "❌ Você não tem contas Rockstar cadastradas para backup.",
+                ephemeral=True,
+            )
+            return
+        await interaction.followup.send(
+            "✅ Backup das suas contas gerado com sucesso.",
+            file=backup_file,
+            ephemeral=True,
+        )
+
+    @discord.ui.button(
         label="⚙️ Configurar filtros",
         style=discord.ButtonStyle.secondary,
         custom_id="rockstar_panel:config_filters",
@@ -734,8 +753,46 @@ async def build_panel_embed(db: Database, guild: discord.Guild) -> discord.Embed
         inline=False,
     )
 
+    embed.add_field(
+        name="💾 Backup",
+        value=(
+            "Use o botão '💾 Backup' abaixo para exportar suas próprias contas Rockstar em um arquivo .txt."
+        ),
+        inline=False,
+    )
+
     embed.set_footer(text="Clique em 'Minhas Contas' para acessar suas contas.")
     return embed
+
+
+async def create_rockstar_user_backup(db: Database, user_id: int, guild_id: int):
+    """Gera backup somente das contas do próprio usuário."""
+    accounts = await db.rockstar_list_accounts(user_id, guild_id)
+    if not accounts:
+        return None
+
+    lines = []
+    for acc in accounts:
+        lines.append(f"{acc['email']}:{acc['password']}:{acc['totp_secret']}")
+
+    buffer = io.BytesIO("\n".join(lines).encode("utf-8"))
+    buffer.seek(0)
+    return discord.File(buffer, filename="rockstar_accounts_backup.txt")
+
+
+async def create_rockstar_accounts_backup(db: Database, guild_id: int):
+    """Gera backup de todas as contas do servidor (uso administrativo)."""
+    accounts = await db.rockstar_list_guild_accounts(guild_id)
+    if not accounts:
+        return None
+
+    lines = []
+    for acc in accounts:
+        lines.append(f"{acc['email']}:{acc['password']}:{acc['totp_secret']}")
+
+    buffer = io.BytesIO("\n".join(lines).encode("utf-8"))
+    buffer.seek(0)
+    return discord.File(buffer, filename="rockstar_accounts_backup.txt")
 
 
 # ── Cog principal ─────────────────────────────────────────────────────────────
@@ -743,8 +800,7 @@ async def build_panel_embed(db: Database, guild: discord.Guild) -> discord.Embed
 class RockstarCog(commands.Cog):
     def __init__(self, bot: commands.Bot, db: Database):
         self.bot = bot
-        self.db = db
-        LOGGER.info("✅ RockstarCog carregado")
+        self.db = db        
 
     @commands.Cog.listener()
     async def on_message(self, message: discord.Message):

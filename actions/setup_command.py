@@ -839,6 +839,18 @@ class MainDashboardView(discord.ui.View):
         embed = await view.build_embed()
         await interaction.response.edit_message(embed=embed, view=view)
 
+    @discord.ui.button(label="🎧 Configurar Discord Accounts", style=discord.ButtonStyle.primary, row=4)
+    async def open_discord_accounts(self, interaction: discord.Interaction, button: discord.ui.Button):
+        """Abre configuração do sistema de gerenciamento de contas Discord."""
+        if not interaction.guild:
+            await interaction.response.send_message("❌ Use este comando em um servidor.", ephemeral=True)
+            return
+
+        from .discord_accounts_config import DiscordAccountsSetupView
+        view = DiscordAccountsSetupView(self.bot, self.db, interaction.guild, parent_view=self)
+        embed = await view.build_embed()
+        await interaction.response.edit_message(embed=embed, view=view)
+
 
 # ===== Wizard Views =====
 
